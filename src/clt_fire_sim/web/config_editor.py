@@ -53,6 +53,26 @@ MATERIAL_LABELS: dict[str, str] = {
     for k, v in MATERIAL_DB.items()
 }
 
+
+def _all_material_keys() -> list[str]:
+    """DB + カスタム材料のキー一覧を返す（カスタムは "custom:名前" 形式）。"""
+    keys = list(MATERIAL_DB.keys())
+    for c in st.session_state.get("custom_materials", []):
+        keys.append(f"custom:{c['name']}")
+    return keys
+
+
+def _all_material_labels() -> dict[str, str]:
+    """DB + カスタム材料のラベル辞書を返す。"""
+    labels = {
+        k: f"{v['name']} （密度 {v['rho_0']:.0f} kg/m³）"
+        for k, v in MATERIAL_DB.items()
+    }
+    for c in st.session_state.get("custom_materials", []):
+        key = f"custom:{c['name']}"
+        labels[key] = f"⚙️ {c['name']}（k={c['k']:.3f} W/m·K, ρ={c['rho']:.0f} kg/m³）"
+    return labels
+
 # メッシュ粗さのプリセット（n_cells_per_layer）
 MESH_OPTIONS: dict[str, int] = {
     "粗い（計算速い・精度低め）": 6,
@@ -76,6 +96,11 @@ def _make_layer(
     thickness_mm: float = 30.0,
     rho_0_kg_m3: float = 400.0,
     moisture_content: float = 0.12,
+    material_type: str = "wood",
+    void_fraction: float = 0.0,
+    k_W_mK: float | None = None,
+    cp_J_kgK: float | None = None,
+    custom_name: str = "",
 ) -> dict[str, Any]:
     """新しいレイヤー辞書を生成する（UUID 付き）。"""
     return {
@@ -85,6 +110,11 @@ def _make_layer(
         "thickness_mm": thickness_mm,
         "rho_0_kg_m3": rho_0_kg_m3,
         "moisture_content": moisture_content,
+        "material_type": material_type,
+        "void_fraction": void_fraction,
+        "k_W_mK": k_W_mK,
+        "cp_J_kgK": cp_J_kgK,
+        "custom_name": custom_name,
     }
 
 
@@ -126,6 +156,10 @@ def init_session_state() -> None:
     # チュートリアル（初回のみ表示）
     if "tutorial_done" not in st.session_state:
         st.session_state.tutorial_done = False
+
+    # カスタム材料レジストリ（ユーザーが追加した材料）
+    if "custom_materials" not in st.session_state:
+        st.session_state.custom_materials = []  # list of dict
 
 
 # ---------------------------------------------------------------------------
@@ -314,48 +348,163 @@ def _render_layer_editor() -> None:
                 help="このレイヤーを削除（最低1層必要）",
             )
 
-            # レイヤー詳細入力
-            st.text_input(
+            # 層名 + 厚さ
+            c_name, c_thick = st.columns([3, 2])
+            c_name.text_input(
                 "層名",
                 value=layer["name"],
                 key=f"name_{lid}",
-                help="管理用の名前（例：'第1層（加熱面）'）",
             )
-            mat_idx = MATERIAL_KEYS.index(layer["material"]) if layer["material"] in MATERIAL_KEYS else 0
-            st.selectbox(
-                "材料",
-                options=MATERIAL_KEYS,
-                format_func=lambda k: MATERIAL_LABELS[k],
-                index=mat_idx,
-                key=f"mat_{lid}",
-                help="木材の樹種を選択してください。",
-            )
-            st.number_input(
+            c_thick.number_input(
                 "厚さ [mm]",
                 min_value=5.0, max_value=200.0,
                 value=layer["thickness_mm"],
                 step=5.0,
                 key=f"thick_{lid}",
-                help="1 層あたりの厚さ（一般的な CLT 規格は 12〜45mm）",
             )
 
-            # 詳細設定（折りたたみ）
-            with st.expander("▸ 詳細設定（密度・含水率）"):
+            # 材料タイプ選択
+            MAT_TYPE_OPTIONS = ["🌲 木材", "◉ 有孔板", "⚙️ カスタム"]
+            _type_map = {"wood": 0, "perforated_wood": 1, "custom": 2}
+            _type_rev = {0: "wood", 1: "perforated_wood", 2: "custom"}
+            cur_type = layer.get("material_type", "wood")
+            type_idx = _type_map.get(cur_type, 0)
+            sel_type_label = st.radio(
+                "材料タイプ",
+                options=MAT_TYPE_OPTIONS,
+                index=type_idx,
+                horizontal=True,
+                key=f"mat_type_radio_{lid}",
+            )
+            mat_type = _type_rev[MAT_TYPE_OPTIONS.index(sel_type_label)]
+
+            # ── 木材 ──────────────────────────────────────────────
+            if mat_type == "wood":
+                _all_mat_keys = _all_material_keys()
+                _all_mat_labels = _all_material_labels()
+                cur_mat = layer.get("material", "sugi")
+                if cur_mat not in _all_mat_keys:
+                    cur_mat = "sugi"
+                st.selectbox(
+                    "樹種",
+                    options=_all_mat_keys,
+                    format_func=lambda k: _all_mat_labels.get(k, k),
+                    index=_all_mat_keys.index(cur_mat),
+                    key=f"mat_{lid}",
+                )
+                with st.expander("▸ 詳細（密度・含水率）"):
+                    st.number_input(
+                        "乾燥密度 [kg/m³]",
+                        min_value=200.0, max_value=900.0,
+                        value=layer["rho_0_kg_m3"],
+                        step=10.0,
+                        key=f"rho_{lid}",
+                    )
+                    st.slider(
+                        "含水率 [%]",
+                        min_value=0, max_value=30,
+                        value=int(layer["moisture_content"] * 100),
+                        key=f"mc_{lid}",
+                    )
+
+            # ── 有孔板 ────────────────────────────────────────────
+            elif mat_type == "perforated_wood":
+                _all_mat_keys = _all_material_keys()
+                _all_mat_labels = _all_material_labels()
+                cur_mat = layer.get("material", "sugi")
+                if cur_mat not in _all_mat_keys:
+                    cur_mat = "sugi"
+                st.selectbox(
+                    "ベース樹種",
+                    options=_all_mat_keys,
+                    format_func=lambda k: _all_mat_labels.get(k, k),
+                    index=_all_mat_keys.index(cur_mat),
+                    key=f"mat_{lid}",
+                )
+                cur_vf = layer.get("void_fraction", 0.1)
+                st.slider(
+                    "空洞率（孔・スリットの断面割合） [%]",
+                    min_value=5, max_value=60,
+                    value=int(cur_vf * 100),
+                    step=5,
+                    key=f"vf_{lid}",
+                    help="板断面積に占める孔・スリットの割合。等価均質物性値で近似します。",
+                )
+                vf_disp = st.session_state.get(f"vf_{lid}", int(cur_vf * 100)) / 100
+                st.caption(
+                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1-vf_disp):.0f} kg/m³ "
+                    f"（空洞率 {vf_disp*100:.0f}% 分を差し引き）"
+                )
+                with st.expander("▸ 詳細（密度・含水率）"):
+                    st.number_input(
+                        "ベース乾燥密度 [kg/m³]",
+                        min_value=200.0, max_value=900.0,
+                        value=layer["rho_0_kg_m3"],
+                        step=10.0,
+                        key=f"rho_{lid}",
+                    )
+                    st.slider(
+                        "含水率 [%]",
+                        min_value=0, max_value=30,
+                        value=int(layer["moisture_content"] * 100),
+                        key=f"mc_{lid}",
+                    )
+
+            # ── カスタム材料 ─────────────────────────────────────
+            else:  # custom
+                # 登録済みカスタム材料から選択 or 直接入力
+                customs = st.session_state.get("custom_materials", [])
+                if customs:
+                    names = ["─ 直接入力 ─"] + [c["name"] for c in customs]
+                    sel_custom = st.selectbox(
+                        "登録済み材料から選択",
+                        options=names,
+                        key=f"custom_sel_{lid}",
+                    )
+                    if sel_custom != "─ 直接入力 ─":
+                        found = next((c for c in customs if c["name"] == sel_custom), None)
+                        if found:
+                            layer["k_W_mK"] = found["k"]
+                            layer["cp_J_kgK"] = found["cp"]
+                            layer["rho_0_kg_m3"] = found["rho"]
+                            layer["custom_name"] = found["name"]
+
+                st.text_input(
+                    "材料名",
+                    value=layer.get("custom_name", ""),
+                    key=f"custom_name_{lid}",
+                    placeholder="例：断熱ボード",
+                )
+                col_k, col_cp = st.columns(2)
+                col_k.number_input(
+                    "熱伝導率 k [W/m·K]",
+                    min_value=0.001, max_value=50.0,
+                    value=float(layer.get("k_W_mK") or 0.12),
+                    format="%.4f",
+                    step=0.01,
+                    key=f"k_custom_{lid}",
+                    help="木材: 0.12 / 石膏ボード: 0.19 / コンクリート: 1.4",
+                )
+                col_cp.number_input(
+                    "比熱 cp [J/kg·K]",
+                    min_value=100.0, max_value=5000.0,
+                    value=float(layer.get("cp_J_kgK") or 1600.0),
+                    step=50.0,
+                    key=f"cp_custom_{lid}",
+                    help="木材: 1600 / 石膏ボード: 1050 / コンクリート: 880",
+                )
                 st.number_input(
-                    "初期乾燥密度 [kg/m³]",
-                    min_value=200.0, max_value=900.0,
+                    "密度 ρ [kg/m³]",
+                    min_value=10.0, max_value=3000.0,
                     value=layer["rho_0_kg_m3"],
                     step=10.0,
                     key=f"rho_{lid}",
-                    help="木材の乾燥密度。カタログ値があれば変更してください。",
                 )
-                st.slider(
-                    "含水率 [%]",
-                    min_value=0, max_value=30,
-                    value=int(layer["moisture_content"] * 100),
-                    key=f"mc_{lid}",
-                    help="含水率が高いほど蒸発帯で炭化が遅くなります（建築部材標準：12%）",
-                )
+                # セッション状態にダミーキーを設定（build_config で参照）
+                if f"mat_{lid}" not in st.session_state:
+                    st.session_state[f"mat_{lid}"] = layer.get("material", "sugi")
+                if f"mc_{lid}" not in st.session_state:
+                    st.session_state[f"mc_{lid}"] = int(layer["moisture_content"] * 100)
 
             st.divider()
 
@@ -497,15 +646,44 @@ def build_config() -> CLTConfig:
     layers: list[LayerConfig] = []
     for layer in st.session_state.layers:
         lid = layer["id"]
+
+        # 材料タイプ
+        _type_label_to_key = {
+            "🌲 木材": "wood",
+            "◉ 有孔板": "perforated_wood",
+            "⚙️ カスタム": "custom",
+        }
+        type_label = st.session_state.get(f"mat_type_radio_{lid}", "🌲 木材")
+        mat_type = _type_label_to_key.get(type_label, layer.get("material_type", "wood"))
+
         material = st.session_state.get(f"mat_{lid}", layer["material"])
+        # "custom:名前" キーの場合は元の DB キーに戻す（物性値は custom フィールドで指定）
+        if material.startswith("custom:"):
+            material = layer.get("material", "sugi")
+
         thickness = st.session_state.get(f"thick_{lid}", layer["thickness_mm"])
         rho_0 = st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"])
         mc_pct = st.session_state.get(f"mc_{lid}", int(layer["moisture_content"] * 100))
+
+        # 有孔板
+        vf_pct = st.session_state.get(f"vf_{lid}", int(layer.get("void_fraction", 0.0) * 100))
+        void_fraction = float(vf_pct) / 100.0
+
+        # カスタム材料
+        k_val = st.session_state.get(f"k_custom_{lid}", layer.get("k_W_mK"))
+        cp_val = st.session_state.get(f"cp_custom_{lid}", layer.get("cp_J_kgK"))
+        custom_name = st.session_state.get(f"custom_name_{lid}", layer.get("custom_name", ""))
+
         layers.append(LayerConfig(
             material=material,
             thickness_mm=float(thickness),
             rho_0_kg_m3=float(rho_0),
             moisture_content=float(mc_pct) / 100.0,
+            material_type=mat_type,
+            void_fraction=void_fraction,
+            k_W_mK=float(k_val) if k_val is not None else None,
+            cp_J_kgK=float(cp_val) if cp_val is not None else None,
+            custom_name=custom_name,
         ))
 
     n_cells = MESH_OPTIONS.get(
@@ -573,7 +751,28 @@ def load_config_from_yaml_str(yaml_str: str) -> CLTConfig:
     return CLTConfig.model_validate(data)
 
 
-def config_to_yaml_str(config: CLTConfig) -> str:
+def _layer_to_dict(layer: "LayerConfig") -> dict:
+    """LayerConfig を YAML 用辞書に変換する（新フィールド対応）。"""
+    d: dict = {
+        "material": layer.material,
+        "thickness_mm": layer.thickness_mm,
+        "rho_0_kg_m3": layer.rho_0_kg_m3,
+        "moisture_content": layer.moisture_content,
+    }
+    if layer.material_type != "wood":
+        d["material_type"] = layer.material_type
+    if layer.void_fraction > 0:
+        d["void_fraction"] = round(layer.void_fraction, 4)
+    if layer.k_W_mK is not None:
+        d["k_W_mK"] = layer.k_W_mK
+    if layer.cp_J_kgK is not None:
+        d["cp_J_kgK"] = layer.cp_J_kgK
+    if layer.custom_name:
+        d["custom_name"] = layer.custom_name
+    return d
+
+
+def config_to_yaml_str(config: "CLTConfig") -> str:
     """CLTConfig を YAML 文字列に変換する。
 
     既存 CLI（`python -m clt_fire_sim.runner config.yaml`）で
@@ -583,12 +782,7 @@ def config_to_yaml_str(config: CLTConfig) -> str:
         "specimen": {
             "name": config.specimen.name,
             "layers": [
-                {
-                    "material": layer.material,
-                    "thickness_mm": layer.thickness_mm,
-                    "rho_0_kg_m3": layer.rho_0_kg_m3,
-                    "moisture_content": layer.moisture_content,
-                }
+                _layer_to_dict(layer)
                 for layer in config.specimen.layers
             ],
         },
@@ -653,8 +847,70 @@ def render_sidebar() -> CLTConfig:
     st.divider()
     _render_layer_editor()
     st.divider()
+    _render_custom_material_manager()
+    st.divider()
     _render_analysis_settings()
     st.divider()
     _render_yaml_io_section()
 
     return build_config()
+
+
+# ---------------------------------------------------------------------------
+# カスタム材料管理セクション
+# ---------------------------------------------------------------------------
+
+def _render_custom_material_manager() -> None:
+    """カスタム材料の登録・削除セクションを描画する。"""
+    st.subheader("🧪 カスタム材料の管理")
+
+    customs = st.session_state.get("custom_materials", [])
+
+    # 登録済み一覧
+    if customs:
+        for idx, c in enumerate(customs):
+            col_info, col_del = st.columns([5, 1])
+            col_info.markdown(
+                f"**{c['name']}**  "
+                f"k={c['k']:.3f} W/m·K、ρ={c['rho']:.0f} kg/m³、cp={c['cp']:.0f} J/kg·K"
+            )
+            if col_del.button("🗑️", key=f"del_custom_{idx}", help="削除"):
+                st.session_state.custom_materials.pop(idx)
+                st.rerun()
+    else:
+        st.caption("登録済みのカスタム材料はありません。")
+
+    # 新規登録フォーム
+    with st.expander("＋ 新しいカスタム材料を登録", expanded=False):
+        new_name = st.text_input("材料名", key="new_custom_name", placeholder="例：石膏ボード")
+        col_k2, col_cp2, col_rho2 = st.columns(3)
+        new_k = col_k2.number_input(
+            "k [W/m·K]", min_value=0.001, max_value=50.0,
+            value=0.19, format="%.3f", step=0.01, key="new_custom_k",
+            help="石膏: 0.19 / 木材: 0.12 / コンクリ: 1.4",
+        )
+        new_cp = col_cp2.number_input(
+            "cp [J/kg·K]", min_value=100.0, max_value=5000.0,
+            value=1050.0, step=50.0, key="new_custom_cp",
+            help="石膏: 1050 / 木材: 1600 / コンクリ: 880",
+        )
+        new_rho = col_rho2.number_input(
+            "ρ [kg/m³]", min_value=10.0, max_value=3000.0,
+            value=800.0, step=10.0, key="new_custom_rho",
+            help="石膏: 800 / 木材: 400 / コンクリ: 2300",
+        )
+
+        if st.button("登録", key="add_custom_material", use_container_width=True):
+            if not new_name.strip():
+                st.error("材料名を入力してください。")
+            elif any(c["name"] == new_name.strip() for c in customs):
+                st.error(f"「{new_name}」はすでに登録されています。")
+            else:
+                st.session_state.custom_materials.append({
+                    "name": new_name.strip(),
+                    "k": float(new_k),
+                    "cp": float(new_cp),
+                    "rho": float(new_rho),
+                })
+                st.success(f"「{new_name}」を登録しました。レイヤーの材料タイプで「木材」を選ぶと使えます。")
+                st.rerun()

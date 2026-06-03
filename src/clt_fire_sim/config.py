@@ -35,13 +35,26 @@ class LayerConfig(BaseModel):
     Parameters
     ----------
     material : str
-        材料名。materials.MATERIAL_DB のキー。
+        材料名。materials.MATERIAL_DB のキー（"sugi", "hinoki" 等）。
     thickness_mm : float
         層の厚み [mm]。正の値のみ許容。
     rho_0_kg_m3 : float
         初期乾燥密度 [kg/m³]。
     moisture_content : float
         含水率（質量比、0〜1）。
+    material_type : str
+        材料タイプ。
+        - "wood"            : Eurocode 5 木材モデル（デフォルト）
+        - "perforated_wood" : 等間隔孔・スリット板（等価均質物性値）
+        - "custom"          : ユーザー定義（k・ρ・cp を直接入力）
+    void_fraction : float
+        空洞率（0〜0.95）。material_type="perforated_wood" のときのみ有効。
+    k_W_mK : float or None
+        熱伝導率 [W/m·K]。material_type="custom" のときに必須。
+    cp_J_kgK : float or None
+        比熱 [J/kg·K]。material_type="custom" のときに必須。
+    custom_name : str
+        カスタム材料名（表示・レポート用）。
     """
 
     material: str = "sugi"
@@ -50,6 +63,12 @@ class LayerConfig(BaseModel):
     moisture_content: float = Field(
         default=0.12, ge=0.0, le=1.0, description="含水率（質量比 0〜1）"
     )
+    # 拡張フィールド（デフォルト値あり → 既存 YAML との後方互換性を維持）
+    material_type: str = Field(default="wood", description="材料タイプ: wood|perforated_wood|custom")
+    void_fraction: float = Field(default=0.0, ge=0.0, lt=1.0, description="空洞率（有孔板用）")
+    k_W_mK: float | None = Field(default=None, description="熱伝導率 [W/m·K]（カスタム用）")
+    cp_J_kgK: float | None = Field(default=None, description="比熱 [J/kg·K]（カスタム用）")
+    custom_name: str = Field(default="", description="カスタム材料名")
 
 
 class SpecimenConfig(BaseModel):

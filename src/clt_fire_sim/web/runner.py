@@ -182,7 +182,11 @@ def _run_simulation_thread(
     import numpy as np
 
     from clt_fire_sim.boundary import ConvRadCoolingBC, ISO834HeatedBC
-    from clt_fire_sim.materials import make_properties
+    from clt_fire_sim.materials import (
+        ConstantProperties,
+        PerforatedWoodProperties,
+        make_properties,
+    )
     from clt_fire_sim.report import compute_charring_rate, evaluate_performance
     from clt_fire_sim.solver.fvm_1d import (
         FVM1DSolver,
@@ -208,14 +212,7 @@ def _run_simulation_thread(
         )
 
         # ---- 物性値 ----
-        layer_props = [
-            make_properties(
-                material=layer.material,
-                rho_0=layer.rho_0_kg_m3,
-                moisture_content=layer.moisture_content,
-            )
-            for layer in spec.layers
-        ]
+        layer_props = [_make_layer_props(layer) for layer in spec.layers]
         props = MultiLayerProperties(layer_thicknesses_m, layer_props)
         props.setup(mesh.x_centers)
 
@@ -310,3 +307,41 @@ def _extract_char_depth_mm(mesh: Any, T: Any) -> float:
     if not np.any(charred):
         return 0.0
     return float(x[charred].max()) * 1000.0
+
+
+def _make_layer_props(layer: Any) -> Any:
+    """LayerConfig から適切な物性値オブジェクトを生成する。
+
+    material_type に応じて以下を返す:
+    - "wood"            : WoodProperties（Eurocode 5 温度依存モデル）
+    - "perforated_wood" : PerforatedWoodProperties（等価均質物性値）
+    - "custom"          : ConstantProperties（ユーザー定義定数物性値）
+    """
+    from clt_fire_sim.materials import (
+        ConstantProperties,
+        PerforatedWoodProperties,
+        make_properties,
+    )
+
+    mat_type = getattr(layer, "material_type", "wood")
+
+    if mat_type == "custom":
+        k = getattr(layer, "k_W_mK", None) or 0.12
+        cp = getattr(layer, "cp_J_kgK", None) or 1600.0
+        return ConstantProperties(k=k, rho=layer.rho_0_kg_m3, cp=cp)
+
+    elif mat_type == "perforated_wood":
+        base = make_properties(
+            material=layer.material,
+            rho_0=layer.rho_0_kg_m3,
+            moisture_content=layer.moisture_content,
+        )
+        vf = getattr(layer, "void_fraction", 0.0)
+        return PerforatedWoodProperties(base, vf)
+
+    else:  # "wood" または未指定
+        return make_properties(
+            material=layer.material,
+            rho_0=layer.rho_0_kg_m3,
+            moisture_content=layer.moisture_content,
+        )

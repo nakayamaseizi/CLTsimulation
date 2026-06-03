@@ -148,7 +148,6 @@ def _run_optimization_thread(
 
     try:
         from clt_fire_sim.boundary import ConvRadCoolingBC, ISO834HeatedBC
-        from clt_fire_sim.materials import make_properties
         from clt_fire_sim.solver.fvm_1d import MultiLayerProperties
         from clt_fire_sim.solver.fvm_3d import (
             FVM3DSolver, make_clt_mesh_3d, setup_multi_layer_props_3d,
@@ -171,10 +170,8 @@ def _run_optimization_thread(
         )
 
         # ── 物性値（全パターン共通）──────────────────────────────────
-        layer_props = [
-            make_properties(l.material, l.rho_0_kg_m3, l.moisture_content)
-            for l in spec.layers
-        ]
+        from clt_fire_sim.web.runner import _make_layer_props
+        layer_props = [_make_layer_props(l) for l in spec.layers]
         props = setup_multi_layer_props_3d(layer_thicknesses_m, layer_props, mesh)
 
         # ── 境界条件（全パターン共通）────────────────────────────────

@@ -382,6 +382,83 @@ MATERIAL_DB: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 定数物性値クラス（カスタム材料用）
+# ---------------------------------------------------------------------------
+
+class ConstantProperties:
+    """温度依存なしの定数物性値クラス。ユーザー定義のカスタム材料に使用する。
+
+    Parameters
+    ----------
+    k : float
+        熱伝導率 [W/m·K]。
+    rho : float
+        密度 [kg/m³]。
+    cp : float
+        比熱 [J/kg·K]。
+    """
+
+    def __init__(self, k: float, rho: float, cp: float) -> None:
+        self.k_val = float(k)
+        self.rho_val = float(rho)
+        self.cp_val = float(cp)
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """温度に依らず一定の熱伝導率配列を返す。"""
+        return np.full(T.shape, self.k_val)
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """温度に依らず一定の ρcp 配列を返す。"""
+        return np.full(T.shape, self.rho_val * self.cp_val)
+
+
+# ---------------------------------------------------------------------------
+# 有孔板の等価物性値クラス
+# ---------------------------------------------------------------------------
+
+# 空気の物性値（孔内の静止空気）
+_AIR_K: float = 0.026        # W/m·K
+_AIR_RHO_CP: float = 1206.0  # J/m³·K
+
+
+class PerforatedWoodProperties:
+    """等間隔孔・スリット板の等価均質物性値クラス。
+
+    木材の物性値に空洞率 φ を考慮した等価物性値を計算する（並列混合則）:
+        k_eff     = (1-φ) * k_wood(T)     + φ * k_air
+        ρcp_eff   = (1-φ) * ρcp_wood(T)  + φ * ρcp_air
+
+    この近似は孔が加熱面と平行に配置（板厚方向に垂直）された場合に妥当。
+    実際の 3D 効果（孔端部の温度集中など）は無視される。
+
+    Parameters
+    ----------
+    base_props : WoodProperties
+        ベースとなる木材の物性値オブジェクト。
+    void_fraction : float
+        空洞率（0〜0.95）。断面積に占める孔・スリットの割合。
+    """
+
+    def __init__(self, base_props: WoodProperties, void_fraction: float) -> None:
+        self.base = base_props
+        self.vf = float(max(0.0, min(0.95, void_fraction)))
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """等価熱伝導率を返す（並列混合則）。"""
+        k_wood = self.base.get_k_array(T)
+        return (1.0 - self.vf) * k_wood + self.vf * _AIR_K
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """等価体積熱容量を返す（並列混合則）。"""
+        rho_cp_wood = self.base.get_rho_cp_array(T)
+        return (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+
+
+# ---------------------------------------------------------------------------
+# 既存の make_properties 関数
+# ---------------------------------------------------------------------------
+
 def make_properties(
     material: str = "sugi",
     rho_0: float | None = None,
