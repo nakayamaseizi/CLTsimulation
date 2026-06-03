@@ -163,9 +163,11 @@ def _run_optimization_thread(
         mesh = make_clt_mesh_3d(
             layer_thicknesses=layer_thicknesses_m,
             n_cells_per_layer=sim.n_cells_per_layer,
-            Ly=panel_Ly, ny=ny,
-            Lz=panel_Lz, nz=nz,
-            ratio=sim.mesh_ratio,
+            specimen_width=panel_Ly,
+            specimen_height=panel_Lz,
+            n_cells_y=ny,
+            n_cells_z=nz,
+            mesh_ratio=sim.mesh_ratio,
         )
 
         # ── 物性値（全パターン共通）──────────────────────────────────
