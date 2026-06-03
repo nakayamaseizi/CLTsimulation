@@ -1,0 +1,70 @@
+# CLT 耐火シミュレーション設定
+# ==============================
+# 試験体: 5層スギ CLT, 総厚 150mm (30mm × 5層)
+# 加熱条件: ISO 834 標準加熱曲線
+# 境界条件: Eurocode 5 (EN 1995-1-2) §3.2.2 準拠
+#
+# 【用途】
+# - Advantec FUW263PB マッフル炉試験の再現
+# - 建築基準法 60分耐火 / 60・75・90分準耐火の評価
+
+specimen:
+  name: "5層スギCLT 150mm"
+  layers:
+    # 層 1: 加熱面側（最も炭化が進行する）
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    # 層 2
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    # 層 3: 中心層
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    # 層 4
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    # 層 5: 非加熱面側（遮熱性評価に使用）
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+
+boundary:
+  heated:
+    # ISO 834 標準加熱（Eurocode 5 §3.2.2）
+    type: iso834
+    alpha_c: 25.0    # 対流熱伝達率 [W/(m²·K)]
+    eps_m: 0.8       # 材料（木材）の放射率
+    eps_f: 1.0       # 火炎の放射率
+  unheated:
+    # 自然対流 + 輻射による冷却（Eurocode 5 §3.2.2）
+    type: conv_rad_cooling
+    alpha_c: 9.0     # 対流熱伝達率 [W/(m²·K)]
+    eps_m: 0.8       # 材料の放射率
+    T_inf: 20.0      # 外気温度 [°C]
+
+simulation:
+  t_end_min: 90.0          # 解析終了時刻 [分]（準耐火90分評価まで）
+  dt_base_s: 5.0           # 通常時の時間刻み [s]
+  dt_min_s: 1.0            # 最小時間刻み（水蒸発帯通過時など）[s]
+  dt_max_s: 10.0           # 最大時間刻み [s]
+  n_picard: 3              # ピカード反復回数
+  n_cells_per_layer: 12    # 層あたりのセル数（合計 60 セル）
+  mesh_ratio: 1.05         # メッシュ幾何公比（加熱面側を細かく）
+  record_interval_s: 30.0  # 記録間隔 [s]（30秒ごと）
+
+evaluation:
+  char_temp: 300.0          # 炭化温度 [°C]（Eurocode 5 規定値）
+  eval_times_min:           # 性能評価時刻 [分]
+    - 60.0                  # 60分耐火 / 準耐火イ評価
+    - 75.0                  # 準耐火ロ評価
+    - 90.0                  # 準耐火ハ評価
+  unheated_face_temp_limit: 160.0  # 非加熱面温度上限 [°C]（20 + 140 K）

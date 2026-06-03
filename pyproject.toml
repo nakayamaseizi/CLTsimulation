@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clt-fire-sim"
+version = "0.2.0"
+description = "CLT耐火性能 3次元非定常熱伝導シミュレータ（Web UI 付き）"
+requires-python = ">=3.11"
+dependencies = [
+    # ── 数値計算コア（Phase 1-6）──────────────────────────
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "pyvista>=0.42",
+    "pyyaml>=6.0",
+    "pandas>=2.0",
+    "pydantic>=2.0",
+    "tqdm>=4.65",
+    # ── Web UI（Phase 7）──────────────────────────────────
+    "streamlit>=1.32",      # Web UI フレームワーク
+    "plotly>=5.18",         # インタラクティブ 3D 可視化
+    "h5py>=3.10",           # HDF5 形式での結果保存
+    "psutil>=5.9",          # PC スペック検出（メモリ・CPU）
+]
+
+[project.scripts]
+# CLI ランナー（python -m clt_fire_sim.runner でも実行可）
+clt-fire-sim = "clt_fire_sim.runner:_cli_entry"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--ignore=tests/test_web"   # Web UI テストは別途実行
+
+# ── uv 設定 ──────────────────────────────────────────────
+[tool.uv]
+# uv sync でインストール後、以下のコマンドで Web UI を起動：
+#   uv run streamlit run src/clt_fire_sim/web/app.py
