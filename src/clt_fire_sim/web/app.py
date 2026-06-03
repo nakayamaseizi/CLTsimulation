@@ -83,11 +83,12 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 st.title("CLT 耐火シミュレーション")
 
-tab_config, tab_run, tab_result, tab_3d, tab_history = st.tabs([
+tab_config, tab_run, tab_result, tab_3d, tab_opt, tab_history = st.tabs([
     "📋 設定確認",
     "▶️ 解析実行",
     "📊 結果",
     "🔬 ビューア",
+    "🔍 孔最適化",
     "📂 履歴",
 ])
 
@@ -441,7 +442,14 @@ with tab_3d:
                 st.error(f"表面温度グラフの生成に失敗しました: {_e}")
 
 # ===========================================================================
-# タブ5：履歴（Phase 7.4）
+# タブ5：孔配置最適化（Phase 8）
+# ===========================================================================
+with tab_opt:
+    from clt_fire_sim.web.optimizer_ui import render_optimizer_tab
+    render_optimizer_tab(config)
+
+# ===========================================================================
+# タブ6：履歴（Phase 7.4）
 # ===========================================================================
 with tab_history:
     from clt_fire_sim.web.result_store import load_result_hdf5, scan_results

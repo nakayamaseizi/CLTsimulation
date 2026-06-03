@@ -29,6 +29,7 @@ fvm_3d.py
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,12 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 空気の物性値（孔・スリット内の空洞セルに使用）
+# ---------------------------------------------------------------------------
+AIR_K: float = 0.026        # 熱伝導率 [W/m·K]（静止空気 20°C）
+AIR_RHO_CP: float = 1206.0  # 体積熱容量 [J/m³·K]（ρ=1.2 kg/m³ × cp=1005 J/kg·K）
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +209,15 @@ class FVM3DSolver:
         bc_right: Any = "adiabatic",
         T_right: float = 20.0,
         T_init: float = 20.0,
+        void_mask: np.ndarray | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        void_mask : np.ndarray or None
+            shape (nx, ny, nz) の bool 配列。True のセルを空洞（空気）として扱う。
+            孔・スリット最適化で使用。None の場合は通常の木材解析。
+        """
         self.mesh = mesh
         self.props = props
         self.bc_left = bc_left
@@ -210,6 +225,11 @@ class FVM3DSolver:
         self.T_right = T_right
         self.T = np.full(mesh.n_cells, float(T_init))
         self.t = 0.0
+        # void_mask を 1D フラットインデックスで保持
+        if void_mask is not None:
+            self._void_flat = void_mask.ravel().astype(bool)
+        else:
+            self._void_flat = None
 
     def _build_matrix(
         self,
@@ -252,6 +272,13 @@ class FVM3DSolver:
         # 物性値（ピカール反復温度で評価）
         k_arr = self.props.get_k_array(T_iter)       # (N,)
         rho_cp = self.props.get_rho_cp_array(T_iter)  # (N,)
+
+        # 孔・スリット部分（空気）の物性値で上書き
+        if self._void_flat is not None:
+            k_arr = k_arr.copy()
+            rho_cp = rho_cp.copy()
+            k_arr[self._void_flat] = AIR_K
+            rho_cp[self._void_flat] = AIR_RHO_CP
 
         k_3d = k_arr.reshape(nx, ny, nz)
         rho_cp_3d = rho_cp.reshape(nx, ny, nz)
@@ -425,6 +452,8 @@ class FVM3DSolver:
         n_picard: int = 2,
         record_interval: float | None = None,
         eval_times: list[float] | None = None,
+        stop_event: threading.Event | None = None,
+        progress_callback: Any | None = None,
     ) -> dict:
         """指定時刻まで時間積分を実行する。
 
@@ -482,6 +511,9 @@ class FVM3DSolver:
         )
 
         while self.t < t_end - 1e-6:
+            if stop_event is not None and stop_event.is_set():
+                break
+
             dt = _choose_dt(self.t)
             dt = min(dt, dt_max, t_end - self.t)
             dt = max(dt, 1e-3)
@@ -491,6 +523,9 @@ class FVM3DSolver:
                 times_out.append(self.t)
                 temps_out.append(self.T.copy())
                 char_out.append(_mean_char_depth())
+
+            if progress_callback is not None:
+                progress_callback(self.t, t_end, self.T)
 
         logger.info(
             f"3D解析完了: t={self.t:.1f}s, "
