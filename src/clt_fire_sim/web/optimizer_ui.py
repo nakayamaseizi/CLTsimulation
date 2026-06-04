@@ -121,6 +121,32 @@ def _render_settings(config: Any, opt_state: Any) -> None:
     with st.expander("候補パターンのプレビュー", expanded=False):
         _show_pattern_grid(preview_patterns, Ly, Lz)
 
+    # ── 燃え抜けモード ─────────────────────────────────────────────
+    st.markdown("#### 🔥 燃え抜けモード")
+    burn_through = st.toggle(
+        "燃え抜けを考慮する（より保守的な評価）",
+        value=True,
+        help=(
+            "**ON（推奨）**: 孔内部に火炎ガスが侵入し、孔内壁を直接加熱する効果を再現。"
+            " 実際の火災に近い保守的な評価になります。\n\n"
+            "**OFF**: 孔を静止空気として扱う（熱伝導のみ）。"
+            " 実際より甘めの結果になります。"
+        ),
+    )
+    if burn_through:
+        st.info(
+            "🔥 **燃え抜けモード ON** — "
+            "孔内部 = ISO 834 火炎温度として計算します。"
+            "孔の周囲の木材が孔内壁からも直接加熱されるため、"
+            "炭化が加速されます（実挙動に近い）。"
+        )
+    else:
+        st.warning(
+            "⚠️ **燃え抜けモード OFF** — "
+            "孔を空気（断熱）として扱います。"
+            "実際より甘めの結果になる可能性があります。"
+        )
+
     # ── 実行ボタン ───────────────────────────────────────────────────
     st.divider()
     if opt_state.status == "running":
@@ -146,6 +172,7 @@ def _render_settings(config: Any, opt_state: Any) -> None:
             st.session_state["opt_ny"] = ny
             st.session_state["opt_nz"] = nz
             st.session_state["opt_patterns"] = preview_patterns
+            st.session_state["opt_burn_through"] = burn_through
 
             run_optimizer.start_optimization(
                 config=config,
@@ -154,6 +181,7 @@ def _render_settings(config: Any, opt_state: Any) -> None:
                 panel_Lz=Lz,
                 ny=ny,
                 nz=nz,
+                burn_through=burn_through,
             )
             st.rerun()
 

@@ -210,6 +210,7 @@ class FVM3DSolver:
         T_right: float = 20.0,
         T_init: float = 20.0,
         void_mask: np.ndarray | None = None,
+        burn_through: bool = False,
     ) -> None:
         """
         Parameters
@@ -217,6 +218,15 @@ class FVM3DSolver:
         void_mask : np.ndarray or None
             shape (nx, ny, nz) の bool 配列。True のセルを空洞（空気）として扱う。
             孔・スリット最適化で使用。None の場合は通常の木材解析。
+        burn_through : bool
+            True の場合、空洞セルを ISO 834 火炎温度に固定（燃え抜けモード）。
+            False（デフォルト）は空洞を空気物性値として扱う（保守側でない）。
+
+            【燃え抜けモードの物理的意味】
+            実際の貫通孔では孔内部に火炎ガスが侵入し、
+            孔の内壁を直接加熱する（ISO 834 相当の温度が孔全体に作用）。
+            このモードでは void セルを内部熱源として扱うことで
+            「孔を通じた次層への直接加熱」を再現する。
         """
         self.mesh = mesh
         self.props = props
@@ -225,6 +235,7 @@ class FVM3DSolver:
         self.T_right = T_right
         self.T = np.full(mesh.n_cells, float(T_init))
         self.t = 0.0
+        self.burn_through = bool(burn_through)
         # void_mask を 1D フラットインデックスで保持
         if void_mask is not None:
             self._void_flat = void_mask.ravel().astype(bool)
@@ -273,12 +284,22 @@ class FVM3DSolver:
         k_arr = self.props.get_k_array(T_iter)       # (N,)
         rho_cp = self.props.get_rho_cp_array(T_iter)  # (N,)
 
-        # 孔・スリット部分（空気）の物性値で上書き
+        # 孔・スリット部分の物性値を設定
         if self._void_flat is not None:
             k_arr = k_arr.copy()
             rho_cp = rho_cp.copy()
-            k_arr[self._void_flat] = AIR_K
-            rho_cp[self._void_flat] = AIR_RHO_CP
+            if self.burn_through:
+                # 燃え抜けモード: 孔内部は高有効熱伝達率（輻射＋対流を模擬）
+                # 火炎ガスが孔に侵入し、孔内壁を強制加熱する効果を
+                # 孔セル内の高い有効熱伝導率で近似する
+                # h_eff ≈ 対流(25) + 輻射(~100 at 500°C) ≈ 125 W/m²K
+                # k_eff = h_eff × cell_size ≈ 125 × 0.005 = 0.625 W/m·K
+                k_arr[self._void_flat] = 0.625
+                rho_cp[self._void_flat] = AIR_RHO_CP
+            else:
+                # 通常モード: 孔 = 静止空気（保守側でない）
+                k_arr[self._void_flat] = AIR_K
+                rho_cp[self._void_flat] = AIR_RHO_CP
 
         k_3d = k_arr.reshape(nx, ny, nz)
         rho_cp_3d = rho_cp.reshape(nx, ny, nz)
@@ -417,13 +438,25 @@ class FVM3DSolver:
 
     def step(self, dt: float, n_picard: int = 2) -> None:
         """1 タイムステップ進める（ピカード反復つき）。"""
+        from clt_fire_sim.boundary import iso834_temperature
+
         T_prev = self.T.copy()
         t_new = self.t + dt
         T_iter = T_prev.copy()
 
+        # 燃え抜けモード: ピカール初期値の孔内部を ISO 834 温度に設定
+        if self._void_flat is not None and self.burn_through:
+            T_fire_now = float(iso834_temperature(t_new / 60.0))
+            T_iter[self._void_flat] = T_fire_now
+
         for picard_idx in range(n_picard):
             A, b = self._build_matrix(dt, t_new, T_iter, T_prev)
             T_new = spla.spsolve(A, b)
+
+            # 燃え抜けモード: 各反復後も孔内部を火炎温度で上書き
+            # → 孔内壁から周囲の木材へ熱が流れ込む効果を実現
+            if self._void_flat is not None and self.burn_through:
+                T_new[self._void_flat] = T_fire_now
 
             if np.any(np.isnan(T_new)) or np.any(T_new < -300.0):
                 logger.error(

@@ -97,6 +97,7 @@ def start_optimization(
     panel_Lz: float,
     ny: int,
     nz: int,
+    burn_through: bool = True,
 ) -> None:
     """バックグラウンドスレッドで最適化を開始する。
 
@@ -110,6 +111,9 @@ def start_optimization(
         CLT パネルの断面サイズ（幅・長さ）[m]。
     ny, nz : int
         y, z 方向のメッシュセル数。
+    burn_through : bool
+        True の場合、孔内部を ISO 834 温度に固定（燃え抜けモード）。
+        デフォルト True（実挙動に近い保守的な評価）。
     """
     global _opt_state, _thread
 
@@ -124,7 +128,7 @@ def start_optimization(
 
     _thread = threading.Thread(
         target=_run_optimization_thread,
-        args=(config, patterns, panel_Ly, panel_Lz, ny, nz),
+        args=(config, patterns, panel_Ly, panel_Lz, ny, nz, burn_through),
         daemon=True,
         name="clt-optimizer",
     )
@@ -142,6 +146,7 @@ def _run_optimization_thread(
     panel_Lz: float,
     ny: int,
     nz: int,
+    burn_through: bool = True,
 ) -> None:
     """最適化のメイン処理（バックグラウンドスレッド）。"""
     wall_start = time.monotonic()
@@ -222,7 +227,9 @@ def _run_optimization_thread(
             void_3d = make_void_mask_3d(pattern.void_yz, mesh.nx)
             pr = _run_one(
                 mesh, props, bc_left, bc_right, T_init, t_end_s, sim,
-                void_mask=void_3d, progress_cb=_progress_cb,
+                void_mask=void_3d,
+                burn_through=burn_through,
+                progress_cb=_progress_cb,
                 stop_event=_stop_event,
                 pattern=pattern,
             )
@@ -258,6 +265,7 @@ def _run_one(
     mesh, props, bc_left, bc_right,
     T_init, t_end_s, sim,
     void_mask=None,
+    burn_through: bool = True,
     progress_cb=None,
     stop_event=None,
     pattern: HolePattern | None = None,
@@ -275,6 +283,7 @@ def _run_one(
             mesh, props, bc_left, bc_right,
             T_init=T_init,
             void_mask=void_mask,
+            burn_through=(burn_through and void_mask is not None),
         )
         result = solver.solve(
             t_end=t_end_s,
