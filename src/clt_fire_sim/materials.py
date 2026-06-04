@@ -349,35 +349,113 @@ def make_sugi_properties(
 # すべての材料に同じ k(T) テーブルを使用（針葉樹材の代表値）
 # 密度のみ材料ごとに異なる
 MATERIAL_DB: dict[str, dict] = {
+
+    # ── 針葉樹（Eurocode 5 木材モデル）────────────────────────────────
     "sugi": {
         "name": "スギ（杉）Cryptomeria japonica",
-        "rho_0": 400.0,        # 標準乾燥密度 [kg/m³]
+        "rho_0": 400.0,
         "moisture_content": 0.12,
         "standard": "EN 1995-1-2 Annex B",
+        "properties_type": "wood",
     },
     "hinoki": {
         "name": "ヒノキ（檜）Chamaecyparis obtusa",
         "rho_0": 430.0,
         "moisture_content": 0.12,
         "standard": "EN 1995-1-2 Annex B",
+        "properties_type": "wood",
     },
     "lauan": {
         "name": "ラワン Shorea spp.（広葉樹）",
         "rho_0": 530.0,
         "moisture_content": 0.12,
         "standard": "EN 1995-1-2 Annex B",
+        "properties_type": "wood",
     },
     "douglas_fir": {
         "name": "ベイマツ Pseudotsuga menziesii",
         "rho_0": 500.0,
         "moisture_content": 0.12,
         "standard": "EN 1995-1-2 Annex B",
+        "properties_type": "wood",
     },
     "spruce": {
         "name": "エゾマツ / トウヒ Picea spp.",
         "rho_0": 380.0,
         "moisture_content": 0.12,
         "standard": "EN 1995-1-2 Annex B",
+        "properties_type": "wood",
+    },
+
+    # ── 研究室論文から追加した木質系（Eurocode 5 スケール）────────────
+    "falcata": {
+        "name": "ファルカタ Paraserianthes falcataria（軽量広葉樹）",
+        "rho_0": 280.0,        # 林田2018・田村2019 実測 196〜446 kg/m³ 中央値
+        "moisture_content": 0.12,
+        "k_measured": 0.080,   # 林田2018 λ=0.090, 田村2019 λ=0.070 の平均
+        "standard": "鷹野研究室 実測値（2017〜2019年）",
+        "properties_type": "wood",
+    },
+    "kiri": {
+        "name": "キリ（桐）Paulownia tomentosa（超軽量広葉樹）",
+        "rho_0": 296.0,        # 林田2018 実測
+        "moisture_content": 0.12,
+        "k_measured": 0.091,   # 吉原2017 実測
+        "standard": "鷹野研究室 実測値（2017〜2018年）",
+        "properties_type": "wood",
+    },
+    "akagashi": {
+        "name": "アカガシ Quercus acuta（高比重広葉樹）",
+        "rho_0": 850.0,        # 林田2018 実測 815〜885 kg/m³
+        "moisture_content": 0.12,
+        "k_measured": 0.186,   # 柴田2021 使用値
+        "standard": "鷹野研究室 実測値（2018〜2021年）",
+        "properties_type": "wood",
+    },
+    "bamboo_glulam": {
+        "name": "竹集成材 Moso bamboo GLT",
+        "rho_0": 600.0,        # 林田2018 実測 584〜620 kg/m³
+        "moisture_content": 0.12,
+        "standard": "鷹野研究室 実測値（2018年）",
+        "properties_type": "wood",
+    },
+    "insulation_board": {
+        "name": "インシュレーションボード（木質繊維断熱板）",
+        "rho_0": 244.0,        # 林田2018 実測 230〜259 kg/m³
+        "moisture_content": 0.12,
+        "k_measured": 0.058,   # 林田2018 実測
+        "standard": "鷹野研究室 実測値（2018〜2021年）",
+        "properties_type": "wood",   # 木質系なので炭化モデルを適用
+    },
+
+    # ── 非木質系・定数物性値材料（ConstantProperties）────────────────
+    "charred_cork": {
+        "name": "炭化コルク（遅燃断熱材）",
+        "rho_0": 130.0,        # 吉原2017・柴田2021 実測 108〜162 kg/m³
+        "moisture_content": 0.0,
+        "k": 0.041,            # 複数論文共通実測値
+        "cp": 2000.0,          # コルク典型値
+        "standard": "鷹野研究室 実測値（2017〜2023年）λ=0.041 W/mK",
+        "properties_type": "constant",
+        "notes": "有炎燃焼なし（遅燃断熱型）。75mm厚で自消（燃え止まり）を確認。",
+    },
+    "cork": {
+        "name": "コルク（無垢）",
+        "rho_0": 127.0,
+        "moisture_content": 0.0,
+        "k": 0.074,            # 林田2018 実測
+        "cp": 2000.0,
+        "standard": "林田2018 実測値 λ=0.074 W/mK",
+        "properties_type": "constant",
+    },
+    "glass_wool": {
+        "name": "グラスウール（断熱材）",
+        "rho_0": 24.0,         # 標準品 24 kg/m³
+        "moisture_content": 0.0,
+        "k": 0.051,            # 林田2018 文献値（田中俊六ら「最新建築環境工学」2014）
+        "cp": 840.0,
+        "standard": "文献値（田中俊六ら2014）λ=0.051 W/mK",
+        "properties_type": "constant",
     },
 }
 
@@ -502,6 +580,17 @@ def make_properties(
         )
 
     defaults = MATERIAL_DB[material]
+    props_type = defaults.get("properties_type", "wood")
+
+    # 定数物性値材料（非木質系：炭化コルク・グラスウールなど）
+    if props_type == "constant":
+        return ConstantProperties(
+            k=defaults["k"],
+            rho=rho_0 if rho_0 is not None else defaults["rho_0"],
+            cp=defaults["cp"],
+        )
+
+    # 木質系（Eurocode 5 温度依存モデル）
     return WoodProperties(
         rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
         moisture_content=(

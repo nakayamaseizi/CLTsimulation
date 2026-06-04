@@ -208,7 +208,7 @@ def _load_preset(preset_name: str) -> None:
     spec = preset.get("specimen", {})
     sim = preset.get("simulation", {})
 
-    # レイヤーリストを新 UUID で再構築
+    # レイヤーリストを新 UUID で再構築（新フィールドも引き継ぐ）
     st.session_state.layers = [
         _make_layer(
             name=layer.get("name", f"第{i+1}層"),
@@ -216,6 +216,11 @@ def _load_preset(preset_name: str) -> None:
             thickness_mm=layer.get("thickness_mm", 30.0),
             rho_0_kg_m3=layer.get("rho_0_kg_m3", 400.0),
             moisture_content=layer.get("moisture_content", 0.12),
+            material_type=layer.get("material_type", "wood"),
+            void_fraction=layer.get("void_fraction", 0.0),
+            k_W_mK=layer.get("k_W_mK"),
+            cp_J_kgK=layer.get("cp_J_kgK"),
+            custom_name=layer.get("custom_name", ""),
         )
         for i, layer in enumerate(spec.get("layers", []))
     ]
