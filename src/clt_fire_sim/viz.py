@@ -34,20 +34,51 @@ from .boundary import iso834_temperature
 def _setup_font() -> None:
     """日本語フォントと unicode マイナスを設定する。
 
-    Windows: Yu Gothic、Linux (Streamlit Cloud): Noto Sans CJP / IPAGothic、
-    どれも無ければ警告なしでデフォルトフォントを使う。
+    優先順位:
+    1. キャッシュ済みフォント名リストから検索（高速）
+    2. システムフォントファイルを直接スキャン（Linux / Streamlit Cloud）
+    3. 見つからなければデフォルトのまま（エラーなし）
     """
+    import glob
     import matplotlib.font_manager as fm
 
-    # 優先順位順に試す
-    candidates = ["Yu Gothic", "Noto Sans CJK JP", "IPAGothic", "IPAPGothic", "TakaoPGothic"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
+    # ── ステップ1: フォント名で検索 ──────────────────────────────
+    candidates = [
+        "Noto Sans CJK JP",   # Linux (packages.txt で fonts-noto-cjk を導入)
+        "Noto Sans CJK",
+        "NotoSansCJK-Regular",
+        "Yu Gothic",          # Windows
+        "IPAGothic",
+        "IPAPGothic",
+        "TakaoPGothic",
+    ]
     available = {f.name for f in fm.fontManager.ttflist}
     for font in candidates:
         if font in available:
             matplotlib.rcParams["font.family"] = font
-            break
-    # どれも見つからなければデフォルトのまま（エラーは出さない）
-    matplotlib.rcParams["axes.unicode_minus"] = False
+            return
+
+    # ── ステップ2: ファイルパスで Noto CJK を直接スキャン ──────
+    search_patterns = [
+        "/usr/share/fonts/**/*Noto*CJK*.otf",
+        "/usr/share/fonts/**/*Noto*CJK*.ttc",
+        "/usr/share/fonts/**/*Noto*CJK*.ttf",
+        "/usr/local/share/fonts/**/*Noto*.otf",
+    ]
+    for pattern in search_patterns:
+        paths = glob.glob(pattern, recursive=True)
+        if paths:
+            try:
+                fm.fontManager.addfont(paths[0])
+                prop = fm.FontProperties(fname=paths[0])
+                matplotlib.rcParams["font.family"] = prop.get_name()
+                return
+            except Exception:
+                continue
+
+    # ── ステップ3: フォールバック（文字化けは防げないが動作する）──
 
 
 # ---------------------------------------------------------------------------
