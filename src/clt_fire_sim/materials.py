@@ -243,9 +243,21 @@ class WoodProperties:
         rho_0: float = 400.0,
         moisture_content: float = 0.12,
         smooth_half_width: float = 2.5,
+        k_scale: float = 1.0,
     ) -> None:
+        """
+        Parameters
+        ----------
+        k_scale : float
+            熱伝導率スケール係数（デフォルト 1.0 = Eurocode 5 そのまま）。
+            実測 λ が Eurocode 5 の基準値（20°C で 0.12 W/m·K）と異なる樹種に対して
+            k_scale = λ_measured / 0.12 として補正する。
+            例: ファルカタ λ=0.080 → k_scale=0.080/0.12≈0.667
+                アカガシ   λ=0.186 → k_scale=0.186/0.12≈1.550
+        """
         self.rho_0 = rho_0
         self.moisture_content = moisture_content
+        self.k_scale = float(k_scale)
 
         # 各テーブルを生成してスムージング
         self._rho_ratio_table = smooth_table_jumps(
@@ -264,6 +276,8 @@ class WoodProperties:
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """熱伝導率 k(T) [W/(m·K)] を返す。
 
+        Eurocode 5 の標準曲線に k_scale を乗じて実測値補正済みの値を返す。
+
         Parameters
         ----------
         T : np.ndarray
@@ -274,7 +288,7 @@ class WoodProperties:
         np.ndarray
             各セルの熱伝導率 [W/(m·K)]。
         """
-        return table_interp(self._k_table, T)
+        return table_interp(self._k_table, T) * self.k_scale
 
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。
@@ -591,6 +605,12 @@ def make_properties(
         )
 
     # 木質系（Eurocode 5 温度依存モデル）
+    # k_scale: 実測熱伝導率が DB に記録されている場合は補正スケールを計算
+    # Eurocode 5 の基準値（20°C）= 0.12 W/m·K
+    _K_EUROCODE_RT = 0.12  # Eurocode 5 室温熱伝導率 [W/m·K]
+    k_measured = defaults.get("k_measured")
+    k_scale = (k_measured / _K_EUROCODE_RT) if k_measured is not None else 1.0
+
     return WoodProperties(
         rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
         moisture_content=(
@@ -598,4 +618,5 @@ def make_properties(
             if moisture_content is not None
             else defaults["moisture_content"]
         ),
+        k_scale=k_scale,
     )
