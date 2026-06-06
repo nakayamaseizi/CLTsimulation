@@ -1,0 +1,67 @@
+# CLT 耐火シミュレーション設定
+# ==============================
+# 試験体: スリット加工スギラミナを含む多機能CLT（付加型・柴田 2021 準拠）
+#
+# 【試験体構成】
+#   スリット加工付加型（U値 0.53 W/㎡K 目標）
+#   層1（スリット加工燃え代層）: スギ30mm × 幅15mm深さ3mm スリット × 5層 = 65mm
+#   層2（構造CLT）: スギ 90mm（3層30mm）
+#
+# 【実験根拠】
+#   柴田(2021): 幅15深3スリット付加型は60分準耐火性能を有する
+#   中村(2022): スリット加工（幅25, 深さ3mm）燃え代層で1時間耐火性能確認
+
+specimen:
+  name: "スリット加工付加型CLT（幅15mm深さ3mm）"
+  layers:
+    # 層1: スリット加工スギラミナ群（65mm厚として近似）
+    #   幅15mm深さ3mmスリット, ピッチ30mm → 開孔率=15/30=50%（ただし熱性状は異なる）
+    - material: sugi
+      thickness_mm: 65.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+      material_type: slitted_wood
+      slit_width_mm: 15.0    # スリット幅 [mm]
+      slit_depth_mm: 3.0     # スリット深さ [mm]（対流遷移以内 = 断熱効果あり）
+      slit_pitch_mm: 30.0    # スリットピッチ [mm]
+    # 層2: 構造CLT（スギ 90mm）
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+
+boundary:
+  heated:
+    type: iso834
+    alpha_c: 25.0
+    eps_m: 0.8
+    eps_f: 1.0
+  unheated:
+    type: conv_rad_cooling
+    alpha_c: 9.0
+    eps_m: 0.8
+    T_inf: 20.0
+
+simulation:
+  t_end_min: 60.0
+  dt_base_s: 5.0
+  dt_min_s: 1.0
+  dt_max_s: 10.0
+  n_picard: 3
+  n_cells_per_layer: 10
+  mesh_ratio: 1.05
+  record_interval_s: 30.0
+
+evaluation:
+  char_temp: 300.0
+  eval_times_min:
+    - 60.0
+  unheated_face_temp_limit: 160.0

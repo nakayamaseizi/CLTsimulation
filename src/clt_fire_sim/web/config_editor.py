@@ -64,10 +64,18 @@ def _all_material_keys() -> list[str]:
 
 def _all_material_labels() -> dict[str, str]:
     """DB + カスタム材料のラベル辞書を返す。"""
-    labels = {
-        k: f"{v['name']} （密度 {v['rho_0']:.0f} kg/m³）"
-        for k, v in MATERIAL_DB.items()
+    # 特定材料にアイコンプレフィックスを付けて識別しやすくする
+    _PREFIX = {
+        "charred_cork":    "🔶",   # 遅燃断熱材
+        "cork":            "🟠",
+        "glass_wool":      "⬜",   # 無機断熱材
+        "fr_sugi":         "🔴",   # 不燃処理スギ（燃え止まり層用）
+        "insulation_board":"🟤",   # 木質繊維断熱板
     }
+    labels = {}
+    for k, v in MATERIAL_DB.items():
+        prefix = _PREFIX.get(k, "")
+        labels[k] = f"{prefix} {v['name']} （密度 {v['rho_0']:.0f} kg/m³）".strip()
     for c in st.session_state.get("custom_materials", []):
         key = f"custom:{c['name']}"
         labels[key] = f"⚙️ {c['name']}（k={c['k']:.3f} W/m·K, ρ={c['rho']:.0f} kg/m³）"
@@ -101,6 +109,11 @@ def _make_layer(
     k_W_mK: float | None = None,
     cp_J_kgK: float | None = None,
     custom_name: str = "",
+    hole_diameter_mm: float = 3.0,
+    hole_depth_mm: float = 20.0,
+    slit_width_mm: float = 15.0,
+    slit_depth_mm: float = 3.0,
+    slit_pitch_mm: float = 30.0,
 ) -> dict[str, Any]:
     """新しいレイヤー辞書を生成する（UUID 付き）。"""
     return {
@@ -115,6 +128,11 @@ def _make_layer(
         "k_W_mK": k_W_mK,
         "cp_J_kgK": cp_J_kgK,
         "custom_name": custom_name,
+        "hole_diameter_mm": hole_diameter_mm,
+        "hole_depth_mm": hole_depth_mm,
+        "slit_width_mm": slit_width_mm,
+        "slit_depth_mm": slit_depth_mm,
+        "slit_pitch_mm": slit_pitch_mm,
     }
 
 
@@ -160,6 +178,16 @@ def init_session_state() -> None:
     # カスタム材料レジストリ（ユーザーが追加した材料）
     if "custom_materials" not in st.session_state:
         st.session_state.custom_materials = []  # list of dict
+
+    # 放冷フェーズ設定
+    if "cooling_time_h" not in st.session_state:
+        st.session_state.cooling_time_h = 0.0
+    if "cooling_tau_min" not in st.session_state:
+        st.session_state.cooling_tau_min = 75.0
+    if "char_stop_enabled" not in st.session_state:
+        st.session_state.char_stop_enabled = False
+    if "structural_layer_index" not in st.session_state:
+        st.session_state.structural_layer_index = -1
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +255,19 @@ def _load_preset(preset_name: str) -> None:
 
     st.session_state.specimen_name = spec.get("name", "CLT試験体")
     st.session_state.t_end_min = sim.get("t_end_min", 90.0)
+
+    # 放冷フェーズ設定（プリセットに記載がある場合のみ反映）
+    if "cooling_time_h" in sim:
+        st.session_state.cooling_time_h = sim["cooling_time_h"]
+    if "cooling_tau_min" in sim:
+        st.session_state.cooling_tau_min = sim["cooling_tau_min"]
+
+    # 燃え止まり評価設定
+    ev = preset.get("evaluation", {})
+    if "char_stop_enabled" in ev:
+        st.session_state.char_stop_enabled = ev["char_stop_enabled"]
+    if "structural_layer_index" in ev:
+        st.session_state.structural_layer_index = ev["structural_layer_index"]
 
 
 # ---------------------------------------------------------------------------
@@ -369,51 +410,41 @@ def _render_layer_editor() -> None:
             )
 
             # 材料タイプ選択
-            MAT_TYPE_OPTIONS = ["🌲 木材", "◉ 有孔板", "⚙️ カスタム"]
-            _type_map = {"wood": 0, "perforated_wood": 1, "custom": 2}
-            _type_rev = {0: "wood", 1: "perforated_wood", 2: "custom"}
+            MAT_TYPE_OPTIONS = [
+                "🌲 木材",
+                "◉ 有孔板（簡易）",
+                "🔬 有孔板（精密・池畑式）",
+                "〰 スリット加工",
+                "⚙️ カスタム",
+            ]
+            _type_map = {
+                "wood": 0,
+                "perforated_wood": 1,
+                "perforated_wood_advanced": 2,
+                "slitted_wood": 3,
+                "custom": 4,
+            }
+            _type_rev = {0: "wood", 1: "perforated_wood", 2: "perforated_wood_advanced",
+                         3: "slitted_wood", 4: "custom"}
             cur_type = layer.get("material_type", "wood")
             type_idx = _type_map.get(cur_type, 0)
             sel_type_label = st.radio(
                 "材料タイプ",
                 options=MAT_TYPE_OPTIONS,
                 index=type_idx,
-                horizontal=True,
+                horizontal=False,
                 key=f"mat_type_radio_{lid}",
+                help=(
+                    "🌲木材: Eurocode 5 温度依存物性値\n"
+                    "◉有孔板(簡易): 並列混合則による等価λ\n"
+                    "🔬有孔板(精密): 池畑(2021)実験式（Φ・H依存）\n"
+                    "〰スリット: 柴田(2021)・池畑(2021)準拠のスリット加工モデル"
+                ),
             )
             mat_type = _type_rev[MAT_TYPE_OPTIONS.index(sel_type_label)]
 
-            # ── 木材 ──────────────────────────────────────────────
-            if mat_type == "wood":
-                _all_mat_keys = _all_material_keys()
-                _all_mat_labels = _all_material_labels()
-                cur_mat = layer.get("material", "sugi")
-                if cur_mat not in _all_mat_keys:
-                    cur_mat = "sugi"
-                st.selectbox(
-                    "樹種",
-                    options=_all_mat_keys,
-                    format_func=lambda k: _all_mat_labels.get(k, k),
-                    index=_all_mat_keys.index(cur_mat),
-                    key=f"mat_{lid}",
-                )
-                with st.expander("▸ 詳細（密度・含水率）"):
-                    st.number_input(
-                        "乾燥密度 [kg/m³]",
-                        min_value=200.0, max_value=900.0,
-                        value=layer["rho_0_kg_m3"],
-                        step=10.0,
-                        key=f"rho_{lid}",
-                    )
-                    st.slider(
-                        "含水率 [%]",
-                        min_value=0, max_value=30,
-                        value=int(layer["moisture_content"] * 100),
-                        key=f"mc_{lid}",
-                    )
-
-            # ── 有孔板 ────────────────────────────────────────────
-            elif mat_type == "perforated_wood":
+            def _render_base_material(lid=lid, layer=layer):
+                """ベース樹種・密度・含水率の共通UI。"""
                 _all_mat_keys = _all_material_keys()
                 _all_mat_labels = _all_material_labels()
                 cur_mat = layer.get("material", "sugi")
@@ -426,24 +457,10 @@ def _render_layer_editor() -> None:
                     index=_all_mat_keys.index(cur_mat),
                     key=f"mat_{lid}",
                 )
-                cur_vf = layer.get("void_fraction", 0.1)
-                st.slider(
-                    "空洞率（孔・スリットの断面割合） [%]",
-                    min_value=5, max_value=60,
-                    value=int(cur_vf * 100),
-                    step=5,
-                    key=f"vf_{lid}",
-                    help="板断面積に占める孔・スリットの割合。等価均質物性値で近似します。",
-                )
-                vf_disp = st.session_state.get(f"vf_{lid}", int(cur_vf * 100)) / 100
-                st.caption(
-                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1-vf_disp):.0f} kg/m³ "
-                    f"（空洞率 {vf_disp*100:.0f}% 分を差し引き）"
-                )
                 with st.expander("▸ 詳細（密度・含水率）"):
                     st.number_input(
-                        "ベース乾燥密度 [kg/m³]",
-                        min_value=200.0, max_value=900.0,
+                        "乾燥密度 [kg/m³]",
+                        min_value=100.0, max_value=1200.0,
                         value=layer["rho_0_kg_m3"],
                         step=10.0,
                         key=f"rho_{lid}",
@@ -454,6 +471,115 @@ def _render_layer_editor() -> None:
                         value=int(layer["moisture_content"] * 100),
                         key=f"mc_{lid}",
                     )
+
+            # ── 木材 ──────────────────────────────────────────────
+            if mat_type == "wood":
+                _render_base_material()
+
+            # ── 有孔板（簡易：並列混合則） ──────────────────────────
+            elif mat_type == "perforated_wood":
+                _render_base_material()
+                cur_vf = layer.get("void_fraction", 0.1)
+                st.slider(
+                    "空洞率（開孔率） [%]",
+                    min_value=5, max_value=60,
+                    value=int(cur_vf * 100),
+                    step=5,
+                    key=f"vf_{lid}",
+                    help="板断面積に占める孔の割合。並列混合則で等価λを計算します。",
+                )
+                vf_disp = st.session_state.get(f"vf_{lid}", int(cur_vf * 100)) / 100
+                st.caption(
+                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1-vf_disp):.0f} kg/m³ "
+                    f"（空洞率 {vf_disp*100:.0f}%）"
+                )
+
+            # ── 有孔板（精密：池畑 2021 実験式） ──────────────────
+            elif mat_type == "perforated_wood_advanced":
+                _render_base_material()
+                cur_vf = layer.get("void_fraction", 0.1)
+                st.slider(
+                    "開孔率 φ [%]",
+                    min_value=5, max_value=55,
+                    value=int(cur_vf * 100),
+                    step=1,
+                    key=f"vf_{lid}",
+                    help="板断面積に占める孔の割合（≒ π(Φ/2)² / P²）",
+                )
+                c_phi, c_h = st.columns(2)
+                c_phi.number_input(
+                    "孔径 Φ [mm]",
+                    min_value=3.0, max_value=18.0,
+                    value=float(layer.get("hole_diameter_mm", 3.0)),
+                    step=1.0,
+                    key=f"phi_{lid}",
+                    help="池畑(2021)実験式の適用範囲: 3〜18 mm",
+                )
+                c_h.number_input(
+                    "孔深さ H [mm]",
+                    min_value=6.0, max_value=30.0,
+                    value=float(layer.get("hole_depth_mm", 20.0)),
+                    step=1.0,
+                    key=f"hole_h_{lid}",
+                    help="池畑(2021)実験式の適用範囲: 6〜30 mm。板厚と同じ場合は貫通孔。",
+                )
+                # Ra1 を表示
+                try:
+                    from clt_fire_sim.materials import _ra1_ikehata
+                    phi_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 3.0)))
+                    h_v = float(st.session_state.get(f"hole_h_{lid}", layer.get("hole_depth_mm", 20.0)))
+                    ra1 = _ra1_ikehata(phi_v, h_v)
+                    st.caption(
+                        f"📐 池畑式 Ra1 = {ra1*1e4:.2f} × 10⁻⁴ m²K/W "
+                        f"（Φ={phi_v:.0f}mm, H={h_v:.0f}mm）"
+                    )
+                except Exception:
+                    pass
+
+            # ── スリット加工 ────────────────────────────────────
+            elif mat_type == "slitted_wood":
+                _render_base_material()
+                c_w, c_d, c_p = st.columns(3)
+                c_w.number_input(
+                    "スリット幅 W [mm]",
+                    min_value=5.0, max_value=30.0,
+                    value=float(layer.get("slit_width_mm", 15.0)),
+                    step=1.0,
+                    key=f"sw_{lid}",
+                    help="柴田(2021)推奨: 15mm（体積減少14%で耐火性能への影響小）",
+                )
+                c_d.number_input(
+                    "スリット深さ D [mm]",
+                    min_value=1.0, max_value=15.0,
+                    value=float(layer.get("slit_depth_mm", 3.0)),
+                    step=1.0,
+                    key=f"sd_{lid}",
+                    help="対流遷移深さ: 9〜12mm。D≤9mm では断熱効果あり。",
+                )
+                c_p.number_input(
+                    "ピッチ P [mm]",
+                    min_value=10.0, max_value=60.0,
+                    value=float(layer.get("slit_pitch_mm", 30.0)),
+                    step=5.0,
+                    key=f"sp_{lid}",
+                    help="スリット中心間距離",
+                )
+                try:
+                    sw_v = float(st.session_state.get(f"sw_{lid}", layer.get("slit_width_mm", 15.0)))
+                    sd_v = float(st.session_state.get(f"sd_{lid}", layer.get("slit_depth_mm", 3.0)))
+                    sp_v = float(st.session_state.get(f"sp_{lid}", layer.get("slit_pitch_mm", 30.0)))
+                    vf_slit = min(sw_v / max(sp_v, sw_v + 1.0), 0.95)
+                    d_eff = min(sd_v, 9.0)
+                    rs_approx = d_eff * 1e-3 / 0.026 * 0.6
+                    st.caption(
+                        f"断面空洞率 φ ≈ {vf_slit*100:.0f}%、"
+                        f"スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W"
+                    )
+                except Exception:
+                    pass
+                # void_fraction のダミーキー（build_config で参照）
+                if f"vf_{lid}" not in st.session_state:
+                    st.session_state[f"vf_{lid}"] = 0
 
             # ── カスタム材料 ─────────────────────────────────────
             else:  # custom
@@ -570,6 +696,68 @@ def _render_analysis_settings() -> None:
     n_layers = len(st.session_state.layers)
     st.caption(f"総セル数：{n_cells * n_layers} セル（{n_layers} 層 × {n_cells} セル/層）")
 
+    # ---- 放冷フェーズ設定 ----
+    with st.expander("🧊 放冷フェーズ（燃え止まり型CLT向け）", expanded=False):
+        st.caption(
+            "炭化コルクやスリット加工ラミナを含む**燃え止まり型CLT**の評価に使用します。"
+            "加熱終了後の炉内自然冷却をシミュレートし、構造層への損傷有無を判定します。"
+        )
+        cooling_h = st.number_input(
+            "放冷時間 [時間]",
+            min_value=0.0, max_value=6.0,
+            value=st.session_state.cooling_time_h,
+            step=0.5,
+            key="cooling_time_input",
+            help=(
+                "0 = 放冷なし（従来動作）。\n"
+                "防耐火性能基準・評価業務方法書: 加熱時間の3倍 + α = 通常4時間推奨。"
+            ),
+        )
+        st.session_state.cooling_time_h = cooling_h
+
+        if cooling_h > 0.0:
+            tau_min = st.number_input(
+                "炉内冷却時定数 τ [分]",
+                min_value=30.0, max_value=180.0,
+                value=st.session_state.cooling_tau_min,
+                step=5.0,
+                key="cooling_tau_input",
+                help=(
+                    "指数減衰モデルの時定数。小型マッフル炉（FUW210PB）実測推定値: 75分。\n"
+                    "大型炉では時定数が大きくなります（より緩やかに冷却）。"
+                ),
+            )
+            st.session_state.cooling_tau_min = tau_min
+
+            # 燃え止まり判定オプション
+            st.divider()
+            char_stop = st.checkbox(
+                "🛑 燃え止まり判定を行う",
+                value=st.session_state.char_stop_enabled,
+                key="char_stop_checkbox",
+                help=(
+                    "放冷終了時に構造層表面温度と試験体内最高温度を評価し、"
+                    "自消（燃え止まり）の可否を判定します。"
+                ),
+            )
+            st.session_state.char_stop_enabled = char_stop
+
+            if char_stop:
+                n_layers_now = len(st.session_state.layers)
+                struct_idx = st.selectbox(
+                    "構造層インデックス",
+                    options=list(range(n_layers_now)),
+                    index=min(max(st.session_state.structural_layer_index, 0), n_layers_now - 1),
+                    format_func=lambda i: f"第{i+1}層（{'🔥加熱面側' if i == 0 else ('❄️非加熱面側' if i == n_layers_now-1 else '中間層')}）",
+                    key="struct_layer_sel",
+                    help="燃え止まり判定で「構造層表面温度」を評価する層。通常は炭化コルクの背後の層。",
+                )
+                st.session_state.structural_layer_index = struct_idx
+                st.caption(
+                    "判定基準：放冷終了時に構造層表面温度 < 100°C かつ "
+                    "試験体内最高温度 < 250°C → 燃え止まり OK"
+                )
+
 
 def _render_yaml_io_section() -> None:
     """設定 YAML のエクスポート・インポートセクションを描画する。"""
@@ -670,9 +858,18 @@ def build_config() -> CLTConfig:
         rho_0 = st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"])
         mc_pct = st.session_state.get(f"mc_{lid}", int(layer["moisture_content"] * 100))
 
-        # 有孔板
+        # 有孔板（簡易・精密共通）
         vf_pct = st.session_state.get(f"vf_{lid}", int(layer.get("void_fraction", 0.0) * 100))
         void_fraction = float(vf_pct) / 100.0
+
+        # 有孔板精密モデル用
+        hole_diameter_mm = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 3.0)))
+        hole_depth_mm = float(st.session_state.get(f"hole_h_{lid}", layer.get("hole_depth_mm", 20.0)))
+
+        # スリット加工用
+        slit_width_mm = float(st.session_state.get(f"sw_{lid}", layer.get("slit_width_mm", 15.0)))
+        slit_depth_mm = float(st.session_state.get(f"sd_{lid}", layer.get("slit_depth_mm", 3.0)))
+        slit_pitch_mm = float(st.session_state.get(f"sp_{lid}", layer.get("slit_pitch_mm", 30.0)))
 
         # カスタム材料
         k_val = st.session_state.get(f"k_custom_{lid}", layer.get("k_W_mK"))
@@ -689,6 +886,11 @@ def build_config() -> CLTConfig:
             k_W_mK=float(k_val) if k_val is not None else None,
             cp_J_kgK=float(cp_val) if cp_val is not None else None,
             custom_name=custom_name,
+            hole_diameter_mm=hole_diameter_mm,
+            hole_depth_mm=hole_depth_mm,
+            slit_width_mm=slit_width_mm,
+            slit_depth_mm=slit_depth_mm,
+            slit_pitch_mm=slit_pitch_mm,
         ))
 
     n_cells = MESH_OPTIONS.get(
@@ -710,6 +912,12 @@ def build_config() -> CLTConfig:
     if not eval_times:
         eval_times = [t_end]
 
+    # 放冷フェーズ設定
+    cooling_time_h = float(st.session_state.get("cooling_time_h", 0.0))
+    cooling_tau_min = float(st.session_state.get("cooling_tau_min", 75.0))
+    char_stop_enabled = bool(st.session_state.get("char_stop_enabled", False))
+    structural_layer_index = int(st.session_state.get("structural_layer_index", -1))
+
     return CLTConfig(
         specimen=SpecimenConfig(name=spec_name, layers=layers),
         boundary=BoundaryConfig(
@@ -725,11 +933,15 @@ def build_config() -> CLTConfig:
             n_cells_per_layer=n_cells,
             mesh_ratio=1.05,
             record_interval_s=30.0,
+            cooling_time_h=cooling_time_h,
+            cooling_tau_min=cooling_tau_min,
         ),
         evaluation=EvaluationConfig(
             char_temp=300.0,
             eval_times_min=eval_times,
             unheated_face_temp_limit=160.0,
+            char_stop_enabled=char_stop_enabled,
+            structural_layer_index=structural_layer_index,
         ),
     )
 
@@ -774,6 +986,15 @@ def _layer_to_dict(layer: "LayerConfig") -> dict:
         d["cp_J_kgK"] = layer.cp_J_kgK
     if layer.custom_name:
         d["custom_name"] = layer.custom_name
+    # 有孔板精密モデル用
+    if layer.material_type == "perforated_wood_advanced":
+        d["hole_diameter_mm"] = layer.hole_diameter_mm
+        d["hole_depth_mm"] = layer.hole_depth_mm
+    # スリット加工用
+    if layer.material_type == "slitted_wood":
+        d["slit_width_mm"] = layer.slit_width_mm
+        d["slit_depth_mm"] = layer.slit_depth_mm
+        d["slit_pitch_mm"] = layer.slit_pitch_mm
     return d
 
 
@@ -814,11 +1035,17 @@ def config_to_yaml_str(config: "CLTConfig") -> str:
             "n_cells_per_layer": config.simulation.n_cells_per_layer,
             "mesh_ratio": config.simulation.mesh_ratio,
             "record_interval_s": config.simulation.record_interval_s,
+            **( {"cooling_time_h": config.simulation.cooling_time_h,
+                 "cooling_tau_min": config.simulation.cooling_tau_min}
+               if config.simulation.cooling_time_h > 0 else {} ),
         },
         "evaluation": {
             "char_temp": config.evaluation.char_temp,
             "eval_times_min": config.evaluation.eval_times_min,
             "unheated_face_temp_limit": config.evaluation.unheated_face_temp_limit,
+            **( {"char_stop_enabled": config.evaluation.char_stop_enabled,
+                 "structural_layer_index": config.evaluation.structural_layer_index}
+               if config.evaluation.char_stop_enabled else {} ),
         },
     }
     buf = StringIO()

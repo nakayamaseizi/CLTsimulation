@@ -24,9 +24,15 @@ from typing import Any
 
 import numpy as np
 
-from .boundary import ConvRadCoolingBC, ISO834HeatedBC
+from .boundary import ConvRadCoolingBC, CoolingFurnaceBC, ISO834HeatedBC
 from .config import CLTConfig, load_config
-from .materials import make_properties
+from .materials import (
+    ConstantProperties,
+    PerforatedWoodAdvanced,
+    SlittedWoodProperties,
+    WoodProperties,
+    make_properties,
+)
 from .solver.fvm_1d import FVM1DSolver, MultiLayerProperties, make_multi_layer_mesh
 
 logger = logging.getLogger(__name__)
@@ -84,17 +90,19 @@ def run_from_config(config: CLTConfig) -> dict[str, Any]:
 
     # ---- 2. 多層物性値の構築 ----
     layer_props = [
-        make_properties(
-            material=layer.material,
-            rho_0=layer.rho_0_kg_m3,
-            moisture_content=layer.moisture_content,
-        )
+        _build_layer_properties(layer)
         for layer in spec.layers
     ]
 
+    # 各層の接触熱抵抗（その層の非加熱面側界面）
+    contact_resistances = [
+        getattr(layer, "contact_resistance_m2KW", 0.0)
+        for layer in spec.layers
+    ]
     props = MultiLayerProperties(
         layer_thicknesses=layer_thicknesses_m,
         layer_props=layer_props,
+        contact_resistances=contact_resistances,
     )
     props.setup(mesh.x_centers)
 
@@ -120,20 +128,52 @@ def run_from_config(config: CLTConfig) -> dict[str, Any]:
         T_init=T_init,
     )
 
+    # 放冷フェーズ用の境界条件
+    t_heat_end_s = sim.t_end_min * 60.0
+    bc_left_cooling = None
+    t_cooling_s = 0.0
+    if sim.cooling_time_h > 0.0:
+        from .boundary import iso834_temperature  # 局所インポート（循環回避）
+        T_at_heat_end = iso834_temperature(sim.t_end_min)
+        bc_left_cooling = CoolingFurnaceBC(
+            T_end_C=T_at_heat_end,
+            t_heat_end_s=t_heat_end_s,
+            tau_s=sim.cooling_tau_min * 60.0,
+            alpha_c=bc_cfg.heated.alpha_c,
+            eps_m=bc_cfg.heated.eps_m,
+            eps_f=bc_cfg.heated.eps_f,
+            T_ambient=bc_cfg.unheated.T_inf,
+        )
+        t_cooling_s = sim.cooling_time_h * 3600.0
+        logger.info(
+            f"  放冷フェーズ設定: {sim.cooling_time_h:.1f}時間, "
+            f"τ={sim.cooling_tau_min:.0f}分, "
+            f"加熱終了時炉内温度={T_at_heat_end:.0f}°C"
+        )
+
     eval_times_s = [t * 60.0 for t in eval_cfg.eval_times_min]
     result = solver.solve(
-        t_end=sim.t_end_min * 60.0,
+        t_end=t_heat_end_s,
         dt_base=sim.dt_base_s,
         dt_min=sim.dt_min_s,
         dt_max=sim.dt_max_s,
         n_picard=sim.n_picard,
         record_interval=sim.record_interval_s,
         eval_times=eval_times_s,
+        t_cooling=t_cooling_s,
+        bc_left_cooling=bc_left_cooling,
+        cooling_dt_base=max(sim.dt_base_s, 30.0),
     )
 
     # ---- 5. 性能評価 ----
     result["config"] = config
     result["evaluation"] = _evaluate_performance(result, config)
+
+    # ---- 6. 燃え止まり判定（放冷フェーズがある場合のみ）----
+    if eval_cfg.char_stop_enabled and t_cooling_s > 0.0:
+        result["char_stop"] = _evaluate_char_stop(result, config, mesh)
+    else:
+        result["char_stop"] = None
 
     logger.info("シミュレーション完了")
     for t_key, judgment in result["evaluation"].items():
@@ -198,6 +238,171 @@ def _evaluate_performance(result: dict, config: CLTConfig) -> dict[str, dict]:
         }
 
     return judgments
+
+
+def _build_layer_properties(layer):
+    """LayerConfig から適切な物性値オブジェクトを生成する。
+
+    material_type に応じて以下のオブジェクトを返す:
+    - "wood"                    : WoodProperties（Eurocode 5、デフォルト）
+    - "perforated_wood"         : PerforatedWoodProperties（単純並列混合則）
+    - "perforated_wood_advanced": PerforatedWoodAdvanced（池畑 2021 実験式）
+    - "slitted_wood"            : SlittedWoodProperties（スリット加工モデル）
+    - "custom"                  : ConstantProperties（ユーザー定義定数物性値）
+
+    Parameters
+    ----------
+    layer : LayerConfig
+        層の設定オブジェクト。
+
+    Returns
+    -------
+    物性値オブジェクト（get_k_array, get_rho_cp_array を持つ）。
+    """
+    mtype = layer.material_type
+
+    if mtype == "custom":
+        if layer.k_W_mK is None or layer.cp_J_kgK is None:
+            raise ValueError(
+                f"material_type='custom' の層には k_W_mK と cp_J_kgK が必要です。"
+            )
+        return ConstantProperties(
+            k=layer.k_W_mK,
+            rho=layer.rho_0_kg_m3,
+            cp=layer.cp_J_kgK,
+        )
+
+    # ベースとなる木材物性値を取得（k_char_factor も反映）
+    kcf = getattr(layer, "k_char_factor", 1.0)
+    base_props = make_properties(
+        material=layer.material,
+        rho_0=layer.rho_0_kg_m3,
+        moisture_content=layer.moisture_content,
+        k_char_factor=kcf,
+    )
+
+    if mtype == "wood":
+        return base_props
+
+    if mtype == "perforated_wood":
+        from .materials import PerforatedWoodProperties
+        return PerforatedWoodProperties(base_props, layer.void_fraction)
+
+    if mtype == "perforated_wood_advanced":
+        return PerforatedWoodAdvanced(
+            base_props=base_props,
+            void_fraction=layer.void_fraction,
+            hole_diameter_mm=layer.hole_diameter_mm,
+            hole_depth_mm=layer.hole_depth_mm,
+            layer_thickness_mm=layer.thickness_mm,
+        )
+
+    if mtype == "slitted_wood":
+        return SlittedWoodProperties(
+            base_props=base_props,
+            slit_width_mm=layer.slit_width_mm,
+            slit_depth_mm=layer.slit_depth_mm,
+            slit_pitch_mm=layer.slit_pitch_mm,
+            layer_thickness_mm=layer.thickness_mm,
+        )
+
+    raise ValueError(
+        f"未知の material_type: '{mtype}'. "
+        "wood | perforated_wood | perforated_wood_advanced | slitted_wood | custom のいずれかを指定してください。"
+    )
+
+
+def _evaluate_char_stop(result: dict, config: CLTConfig, mesh) -> dict:
+    """放冷フェーズ終了時の燃え止まり（自消）を判定する。
+
+    【判定基準（鷹野研究室の実験に基づく）】
+    1. 放冷終了時点（simulation.cooling_time_h 後）に：
+       a. 構造層表面温度 ≤ evaluation.char_stop_struct_temp_limit (デフォルト 100°C)
+       b. 試験体内最高温度 ≤ evaluation.char_stop_max_temp_limit (デフォルト 250°C)
+    → 上記を両方満たす場合「燃え止まり」と判定。
+
+    【構造層の特定】
+    evaluation.structural_layer_index で指定されたインデックスの層の加熱面側端セルを
+    「構造層表面」と定義する。デフォルトは最終層（-1 = 非加熱面側）の最初のセル。
+
+    Parameters
+    ----------
+    result : dict
+        solver.solve() の返り値。
+    config : CLTConfig
+        設定オブジェクト。
+    mesh : Mesh1D
+        計算格子。
+
+    Returns
+    -------
+    dict
+        {
+          "char_stop_ok": bool,      # 燃え止まりか否か
+          "struct_temp_C": float,    # 放冷終了時の構造層表面温度 [°C]
+          "max_temp_C": float,       # 放冷終了時の試験体内最高温度 [°C]
+          "t_eval_s": float,         # 評価時刻 [s]（=総解析時間）
+          "reason": str,             # 判定理由の説明文
+        }
+    """
+    eval_cfg = config.evaluation
+    sim_cfg = config.simulation
+    spec = config.specimen
+
+    # 評価時刻 = 最後のレコード
+    times = result["times"]
+    temps = result["temperatures"]  # shape (n_times, n_cells)
+    t_eval = float(times[-1])
+    T_final = temps[-1]
+
+    # 構造層の先頭セルインデックスを特定
+    layer_idx = eval_cfg.structural_layer_index
+    n_layers = len(spec.layers)
+    if layer_idx < 0:
+        layer_idx = n_layers + layer_idx  # -1 → 最終層
+    layer_idx = int(np.clip(layer_idx, 0, n_layers - 1))
+
+    # 層の境界座標から対応セルを特定
+    layer_starts_m = np.cumsum([0.0] + [la.thickness_mm / 1000.0 for la in spec.layers])
+    struct_x_start = layer_starts_m[layer_idx]  # 構造層の加熱面側境界
+    x_centers = result["x_centers"]
+    # 構造層の加熱面側端（最初）のセル
+    struct_cell_idx = int(np.argmin(np.abs(x_centers - struct_x_start)))
+
+    T_struct = float(T_final[struct_cell_idx])
+    T_max = float(T_final.max())
+
+    ok_struct = T_struct <= eval_cfg.char_stop_struct_temp_limit
+    ok_max = T_max <= eval_cfg.char_stop_max_temp_limit
+    char_stop_ok = ok_struct and ok_max
+
+    if char_stop_ok:
+        reason = (
+            f"燃え止まり OK: "
+            f"構造層表面 {T_struct:.1f}°C ≤ {eval_cfg.char_stop_struct_temp_limit:.0f}°C, "
+            f"最高温度 {T_max:.1f}°C ≤ {eval_cfg.char_stop_max_temp_limit:.0f}°C"
+        )
+    else:
+        reasons = []
+        if not ok_struct:
+            reasons.append(
+                f"構造層表面 {T_struct:.1f}°C > {eval_cfg.char_stop_struct_temp_limit:.0f}°C"
+            )
+        if not ok_max:
+            reasons.append(
+                f"最高温度 {T_max:.1f}°C > {eval_cfg.char_stop_max_temp_limit:.0f}°C"
+            )
+        reason = "燃え止まり NG: " + ", ".join(reasons)
+
+    logger.info(f"  燃え止まり判定（t={t_eval/60:.0f}分）: {reason}")
+
+    return {
+        "char_stop_ok": char_stop_ok,
+        "struct_temp_C": round(T_struct, 2),
+        "max_temp_C": round(T_max, 2),
+        "t_eval_s": t_eval,
+        "reason": reason,
+    }
 
 
 def run_from_yaml(yaml_path: str | Path) -> dict[str, Any]:

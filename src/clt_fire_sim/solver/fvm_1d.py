@@ -249,7 +249,16 @@ class MultiLayerProperties:
         self,
         layer_thicknesses: list[float],
         layer_props: list[Any],
+        contact_resistances: list[float] | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        contact_resistances : list[float] or None
+            各層の非加熱面側界面の接触熱抵抗 [m²K/W]。
+            長さは layer_thicknesses と同じ。None の場合はすべてゼロ。
+            最終層（layer_thicknesses[-1]）の値は使用されない（非加熱面 BC が担当）。
+        """
         if len(layer_thicknesses) != len(layer_props):
             raise ValueError(
                 f"layer_thicknesses の長さ ({len(layer_thicknesses)}) と "
@@ -258,10 +267,23 @@ class MultiLayerProperties:
         self.layer_thicknesses = list(layer_thicknesses)
         self.layer_props = list(layer_props)
 
+        # 接触熱抵抗（各層の右端界面）
+        n = len(layer_thicknesses)
+        if contact_resistances is not None:
+            if len(contact_resistances) != n:
+                raise ValueError(
+                    f"contact_resistances の長さ ({len(contact_resistances)}) が "
+                    f"layer_thicknesses の長さ ({n}) と一致しません。"
+                )
+            self.contact_resistances = list(contact_resistances)
+        else:
+            self.contact_resistances = [0.0] * n
+
         # 各層の右端座標（cumsum で計算）
         # _boundaries[0]=0, _boundaries[i]=層 0〜i-1 の厚みの合計
         self._boundaries = np.cumsum([0.0] + list(layer_thicknesses))
         self._cell_layer: np.ndarray | None = None
+        self._contact_R_at_interface: np.ndarray | None = None  # セル界面の接触熱抵抗配列
 
     def setup(self, x_centers: np.ndarray) -> None:
         """セル中心座標から各セルが属する層インデックスを計算する。
@@ -286,9 +308,23 @@ class MultiLayerProperties:
         # 境界上の点は右の層に入れ、最右端（x=L_total）は最終層に収める
         self._cell_layer = np.clip(indices, 0, len(self.layer_props) - 1)
 
+        # セル界面ごとの接触熱抵抗配列を構築（長さ = n_cells - 1）
+        # 層境界のセル界面にのみ接触熱抵抗を配置する
+        n_cells = len(x_centers)
+        R_contact = np.zeros(n_cells - 1, dtype=float)
+        for i in range(n_cells - 1):
+            layer_i = int(self._cell_layer[i])
+            layer_j = int(self._cell_layer[i + 1])
+            if layer_i != layer_j:
+                # セル i が属する層の接触熱抵抗を適用
+                R_contact[i] = self.contact_resistances[layer_i]
+        self._contact_R_at_interface = R_contact
+
+        any_contact = np.any(R_contact > 0)
         logger.debug(
             f"MultiLayerProperties.setup: {len(x_centers)} セル, "
-            f"各層のセル数={[int((self._cell_layer == i).sum()) for i in range(len(self.layer_props))]}"
+            f"各層のセル数={[int((self._cell_layer == i).sum()) for i in range(len(self.layer_props))]}, "
+            f"接触熱抵抗={'あり' if any_contact else 'なし'}"
         )
 
     def _check_setup(self, n_cells: int) -> None:
@@ -558,7 +594,15 @@ class FVM1DSolver:
         k_sum = k_arr[:-1] + k_arr[1:]
         k_sum = np.where(k_sum < 1e-10, 1e-10, k_sum)
         k_face = 2.0 * k_arr[:-1] * k_arr[1:] / k_sum
-        cond = k_face / d_c  # コンダクタンス [W/(m²·K)]
+
+        # 界面コンダクタンス [W/(m²·K)]
+        # 接触熱抵抗 R_contact [m²K/W] がある場合は分母に加算する
+        # G = 1 / (δ/k_harmonic + R_contact)
+        R_face = d_c / np.maximum(k_face, 1e-10)  # 純熱伝導抵抗
+        if (hasattr(self.props, "_contact_R_at_interface")
+                and self.props._contact_R_at_interface is not None):
+            R_face = R_face + self.props._contact_R_at_interface
+        cond = 1.0 / np.maximum(R_face, 1e-12)  # コンダクタンス [W/(m²·K)]
 
         # 蓄熱係数
         cap = rho_cp * dx / dt  # [J/(m³·K)] / s
@@ -704,6 +748,10 @@ class FVM1DSolver:
         eval_times: list[float] | None = None,
         progress_callback=None,
         stop_event=None,
+        # ---- 放冷フェーズ設定 ----
+        t_cooling: float = 0.0,
+        bc_left_cooling=None,
+        cooling_dt_base: float = 30.0,
     ) -> dict:
         """指定時刻まで時間積分を実行する。
 
@@ -716,7 +764,7 @@ class FVM1DSolver:
         Parameters
         ----------
         t_end : float
-            解析終了時刻 [s]。
+            加熱終了時刻 [s]。
         dt_base : float
             通常運転時の時間刻み [s]。
         dt_min : float
@@ -731,6 +779,16 @@ class FVM1DSolver:
             指定時刻のみを記録するリスト [s]（record_interval より優先）。
         eval_times : list[float] or None
             性能評価時刻のリスト [s]。この 60s 前から dt を小さくする。
+        t_cooling : float
+            加熱終了後の放冷シミュレーション時間 [s]。0 = 放冷なし。
+            防耐火性能基準・評価業務方法書では加熱時間の 3 倍（60 分試験→180 分放冷
+            + 安全マージン = 合計 4 時間）が規定されている。
+        bc_left_cooling : Any or None
+            放冷フェーズの左端（加熱面）境界条件。
+            None の場合は bc_right（非加熱面と同じ自然冷却 BC）を使用する。
+            通常は CoolingFurnaceBC インスタンスを渡す。
+        cooling_dt_base : float
+            放冷フェーズの基本時間刻み [s]。デフォルト 30 s。
 
         Returns
         -------
@@ -740,6 +798,7 @@ class FVM1DSolver:
               "temperatures": np.ndarray,          # shape (n_times, n_cells)
               "x_centers":    np.ndarray,          # セル中心座標 [m]
               "char_depths":  np.ndarray,          # 炭化深さ [m] (n_times,)
+              "t_heating_end": float,              # 加熱終了時刻 [s]（放冷あり時のみ）
             }
         """
         times_out: list[float] = []
@@ -807,17 +866,52 @@ class FVM1DSolver:
                 if progress_callback is not None:
                     progress_callback(self.t, t_end, self.T)
 
+        t_heating_end = self.t
         logger.info(
-            f"解析完了: t={self.t:.1f}s, "
+            f"加熱フェーズ完了: t={self.t:.1f}s, "
             f"最高温度={self.T.max():.1f}°C, "
             f"炭化深さ={char_depths_out[-1]*1000:.1f}mm"
         )
+
+        # ---- 放冷フェーズ ----
+        if t_cooling > 0.0:
+            t_cool_end = self.t + t_cooling
+            bc_left_orig = self.bc_left
+            if bc_left_cooling is not None:
+                self.bc_left = bc_left_cooling
+            # 放冷フェーズは蒸発帯チェック不要・粗い時間刻みで OK
+            logger.info(
+                f"放冷フェーズ開始: {t_cooling/60:.0f}分間放冷, "
+                f"dt={cooling_dt_base}s"
+            )
+            while self.t < t_cool_end - 1e-6:
+                if stop_event is not None and stop_event.is_set():
+                    logger.info(f"放冷フェーズを中断しました: t={self.t:.1f}s")
+                    break
+                dt_c = min(cooling_dt_base, dt_max, t_cool_end - self.t)
+                dt_c = max(dt_c, 1e-3)
+                self.step(dt_c, n_picard=n_picard)
+
+                if _should_record(self.t):
+                    times_out.append(self.t)
+                    temps_out.append(self.T.copy())
+                    char_depths_out.append(char_depth(self.mesh.x_centers, self.T))
+                    if progress_callback is not None:
+                        progress_callback(self.t, t_cool_end, self.T)
+
+            # BC を元に戻す
+            self.bc_left = bc_left_orig
+            logger.info(
+                f"放冷フェーズ完了: t={self.t:.1f}s ({self.t/60:.1f}min), "
+                f"最高温度={self.T.max():.1f}°C"
+            )
 
         return {
             "times": np.array(times_out),
             "temperatures": np.array(temps_out),
             "x_centers": self.mesh.x_centers,
             "char_depths": np.array(char_depths_out),
+            "t_heating_end": t_heating_end,
         }
 
 

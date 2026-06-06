@@ -64,11 +64,43 @@ class LayerConfig(BaseModel):
         default=0.12, ge=0.0, le=1.0, description="含水率（質量比 0〜1）"
     )
     # 拡張フィールド（デフォルト値あり → 既存 YAML との後方互換性を維持）
-    material_type: str = Field(default="wood", description="材料タイプ: wood|perforated_wood|custom")
+    material_type: str = Field(
+        default="wood",
+        description="材料タイプ: wood|perforated_wood|perforated_wood_advanced|slitted_wood|custom",
+    )
     void_fraction: float = Field(default=0.0, ge=0.0, lt=1.0, description="空洞率（有孔板用）")
     k_W_mK: float | None = Field(default=None, description="熱伝導率 [W/m·K]（カスタム用）")
     cp_J_kgK: float | None = Field(default=None, description="比熱 [J/kg·K]（カスタム用）")
     custom_name: str = Field(default="", description="カスタム材料名")
+    # ---- 炭化速度補正係数 ----
+    k_char_factor: float = Field(
+        default=1.0,
+        ge=1.0,
+        le=3.0,
+        description=(
+            "炭化域（T>300°C）の熱伝導率補正係数。燃焼発熱による炭化促進を近似。\n"
+            "1.0=補正なし（Eurocode 5 保守値）。\n"
+            "実験再現用推奨値: 無加工スギ→1.3、有孔加工→1.5、スリット幅10深9→2.0。"
+        ),
+    )
+    # ---- 有孔加工精密モデル（perforated_wood_advanced）用 ----
+    hole_diameter_mm: float = Field(default=3.0, gt=0, description="孔径 [mm]（池畑式: 3〜18mm）")
+    hole_depth_mm: float = Field(default=20.0, gt=0, description="孔深さ [mm]（池畑式: 6〜30mm）")
+    # ---- スリット加工モデル（slitted_wood）用 ----
+    slit_width_mm: float = Field(default=15.0, gt=0, description="スリット幅 [mm]")
+    slit_depth_mm: float = Field(default=3.0, gt=0, description="スリット深さ [mm]")
+    slit_pitch_mm: float = Field(default=30.0, gt=0, description="スリットピッチ（中心間距離）[mm]")
+    # ---- 接触熱抵抗（この層の非加熱面側界面） ----
+    contact_resistance_m2KW: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "この層の非加熱面側界面の接触熱抵抗 R_contact [m²K/W]。\n"
+            "CLT の接着層（レゾルシノール・フェノール共縮合樹脂など）を近似。\n"
+            "典型値: 0.0001〜0.0005 m²K/W（接着剤厚 0.1-0.3mm, λ≈0.2-0.3 W/mK）。\n"
+            "デフォルト 0.0 = 接触熱抵抗なし（従来動作）。"
+        ),
+    )
 
 
 class SpecimenConfig(BaseModel):
@@ -166,7 +198,7 @@ class SimulationConfig(BaseModel):
         温度場の記録間隔 [s]。
     """
 
-    t_end_min: float = Field(default=90.0, gt=0, description="解析終了時刻 [分]")
+    t_end_min: float = Field(default=90.0, gt=0, description="加熱終了時刻 [分]")
     dt_base_s: float = Field(default=5.0, gt=0, description="基本時間刻み [s]")
     dt_min_s: float = Field(default=1.0, gt=0, description="最小時間刻み [s]")
     dt_max_s: float = Field(default=10.0, gt=0, description="最大時間刻み [s]")
@@ -174,6 +206,29 @@ class SimulationConfig(BaseModel):
     n_cells_per_layer: int = Field(default=12, ge=3, description="層あたりのセル数")
     mesh_ratio: float = Field(default=1.05, ge=1.0, description="メッシュ幾何公比")
     record_interval_s: float = Field(default=30.0, gt=0, description="記録間隔 [s]")
+    # ---- 放冷フェーズ設定 ----
+    cooling_time_h: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "加熱終了後の放冷シミュレーション時間 [時間]。"
+            "0 = 放冷なし（従来動作）。"
+            "燃え止まり型CLTの評価には 4.0（=240分）を推奨（防耐火評価業務方法書より）。"
+        ),
+    )
+    cooling_tau_min: float = Field(
+        default=45.0,
+        gt=0,
+        description=(
+            "炉内冷却時定数 τ [分]。"
+            "指数減衰モデル T_furnace = T_amb + (T_end - T_amb)·exp(-t'/τ)。"
+            "小型電気マッフル炉（FUW210PB）実験データの再解析結果:\n"
+            "  τ ≈ 45 分（朱 2023 図3-8 の炉内温度曲線からフィット）。\n"
+            "  60 分後炉内温度: τ=45 → 264°C（実験値 200-300°C と整合）。\n"
+            "  旧デフォルト 75 分では 436°C と過大推定されていた。\n"
+            "大型炉や換気量の少ない条件では τ を大きく設定すること。"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +258,38 @@ class EvaluationConfig(BaseModel):
     unheated_face_temp_limit: float = Field(
         default=160.0,
         description="非加熱面温度上限 [°C]（遮熱性基準: 20 + 140 = 160°C）",
+    )
+    # ---- 燃え止まり評価設定 ----
+    char_stop_enabled: bool = Field(
+        default=False,
+        description=(
+            "燃え止まり（自消）評価を行うか否か。"
+            "True にするには simulation.cooling_time_h > 0 が必要。"
+            "燃え止まり型CLTや炭化コルクを使用する場合に True にする。"
+        ),
+    )
+    char_stop_struct_temp_limit: float = Field(
+        default=100.0,
+        description=(
+            "燃え止まり判定の構造層表面温度上限 [°C]。"
+            "放冷終了時にこの温度以下であれば燃え止まりと判定。"
+            "鷹野研究室の実験では 100°C を基準とする（柴田 2021, 中村 2022）。"
+        ),
+    )
+    char_stop_max_temp_limit: float = Field(
+        default=250.0,
+        description=(
+            "燃え止まり判定の試験体内最高温度上限 [°C]。"
+            "放冷終了時に試験体内のどのセルもこの温度以下であれば燃え止まりと判定。"
+        ),
+    )
+    structural_layer_index: int = Field(
+        default=-1,
+        description=(
+            "構造層の層インデックス（0-indexed）。"
+            "-1 = 最終層（非加熱面側）。"
+            "燃え止まり判定で構造層表面温度を評価する際に使用する。"
+        ),
     )
 
 

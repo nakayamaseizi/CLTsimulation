@@ -1,0 +1,80 @@
+# CLT 耐火シミュレーション設定
+# ==============================
+# 試験体: スギ燃え代層 + 炭化コルク遅燃断熱層 + CLT構造層
+#         中村恭子 修士論文(2022) / 朱芷萱 学部梗概(2023) 準拠
+#
+# 【試験体構成】
+#   層1（燃え代層）: スギ 15mm
+#   層2（遅燃断熱層）: 炭化コルク 75mm
+#   層3（構造層）: スギ CLT 90mm（5層5プライ相当として 3層で近似）
+#
+# 【実験根拠】
+#   朱(2023): S15+CC75 は 1時間耐火性能を有する（燃え止まり確認）
+#   中村(2022): S15+CC60 は燃え止まりOK, S15+CC75 はより余裕あり
+#
+# 【目的】
+#   放冷フェーズ（4時間）シミュレーションと燃え止まり判定の検証
+
+specimen:
+  name: "燃え止まり型CLT: スギ15+炭化コルク75+CLT90"
+  layers:
+    # 層1: 燃え代層（スギ 15mm）
+    - material: sugi
+      thickness_mm: 15.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    # 層2: 遅燃断熱層（炭化コルク 75mm）
+    #   λ=0.041 W/mK, 無炎燃焼（有炎燃焼なし）
+    - material: charred_cork
+      thickness_mm: 75.0
+      rho_0_kg_m3: 130.0
+      moisture_content: 0.0
+    # 層3: 構造層（スギ CLT 90mm = 3層30mm等厚として近似）
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+
+boundary:
+  heated:
+    type: iso834
+    alpha_c: 25.0
+    eps_m: 0.8
+    eps_f: 1.0
+  unheated:
+    type: conv_rad_cooling
+    alpha_c: 9.0
+    eps_m: 0.8
+    T_inf: 20.0
+
+simulation:
+  t_end_min: 60.0          # 1時間加熱（ISO 834 準拠）
+  dt_base_s: 5.0
+  dt_min_s: 1.0
+  dt_max_s: 10.0
+  n_picard: 3
+  n_cells_per_layer: 10    # 各層10セル（計50セル）
+  mesh_ratio: 1.05
+  record_interval_s: 60.0  # 記録間隔 1分（放冷フェーズで記録量を抑制）
+  # ---- 放冷フェーズ設定 ----
+  cooling_time_h: 4.0      # 加熱終了後4時間放冷（防耐火性能基準・評価業務方法書）
+  cooling_tau_min: 45.0    # 炉内冷却時定数 45分（朱2023実験データよりキャリブレーション）
+
+evaluation:
+  char_temp: 300.0
+  eval_times_min:
+    - 60.0                  # 1時間耐火評価
+  unheated_face_temp_limit: 160.0
+  # ---- 燃え止まり評価設定 ----
+  char_stop_enabled: true                  # 燃え止まり判定を実施
+  char_stop_struct_temp_limit: 100.0       # 構造層表面 100°C 以下で燃え止まり
+  char_stop_max_temp_limit: 250.0          # 試験体内最高温度 250°C 以下
+  structural_layer_index: 2               # 3層目（炭化コルクの背後 = 構造CLTの加熱面側）

@@ -244,6 +244,7 @@ class WoodProperties:
         moisture_content: float = 0.12,
         smooth_half_width: float = 2.5,
         k_scale: float = 1.0,
+        k_char_factor: float = 1.0,
     ) -> None:
         """
         Parameters
@@ -254,10 +255,31 @@ class WoodProperties:
             k_scale = λ_measured / 0.12 として補正する。
             例: ファルカタ λ=0.080 → k_scale=0.080/0.12≈0.667
                 アカガシ   λ=0.186 → k_scale=0.186/0.12≈1.550
+        k_char_factor : float
+            炭化域（T > 300°C）の熱伝導率補正係数（デフォルト 1.0 = 補正なし）。
+
+            【物理的背景】
+            純熱伝導モデルは燃焼時の発熱（木材の燃焼熱 ≈ 16 MJ/kg）を陽に扱わない。
+            この発熱が炭化フロントを加速させる効果を、炭化域のλを等価的に増大させて
+            近似する経験的補正である。
+
+            【推奨値（鷹野研実験値との整合）】
+            - 無加工スギ (ρ≈400): k_char_factor = 1.3〜1.5
+              (実測 0.81-0.86 mm/min vs Eurocode5 0.676 mm/min → 比率 ≈ 1.20-1.27)
+              ただし安全側評価では 1.0 のままが保守的
+            - 有孔加工スギ: k_char_factor = 1.5〜1.7（酸素供給による促進）
+            - スリット加工スギ（幅10深9）: k_char_factor = 1.9〜2.0
+
+            【注意】
+            この係数はキャリブレーション用の経験的補正であり、
+            材料・試験炉条件によって変化する。デフォルト 1.0（補正なし）は
+            Eurocode 5 の設計用炭化速度 β₀=0.65 mm/min と整合する保守的な値。
+            実験再現を目的とする場合のみ 1.0 より大きい値を使用すること。
         """
         self.rho_0 = rho_0
         self.moisture_content = moisture_content
         self.k_scale = float(k_scale)
+        self.k_char_factor = float(k_char_factor)
 
         # 各テーブルを生成してスムージング
         self._rho_ratio_table = smooth_table_jumps(
@@ -277,6 +299,8 @@ class WoodProperties:
         """熱伝導率 k(T) [W/(m·K)] を返す。
 
         Eurocode 5 の標準曲線に k_scale を乗じて実測値補正済みの値を返す。
+        炭化域（T > 300°C）には k_char_factor を追加適用し、
+        燃焼発熱による炭化フロント促進効果を近似する。
 
         Parameters
         ----------
@@ -288,7 +312,14 @@ class WoodProperties:
         np.ndarray
             各セルの熱伝導率 [W/(m·K)]。
         """
-        return table_interp(self._k_table, T) * self.k_scale
+        T_arr = np.asarray(T, dtype=float)
+        k = table_interp(self._k_table, T_arr) * self.k_scale
+        if self.k_char_factor != 1.0:
+            # 炭化域（300°C 以上）に補正係数を適用
+            # 300°C を遷移点として線形ブレンド（±50°C）し数値的滑らかさを確保
+            blend = np.clip((T_arr - 250.0) / 100.0, 0.0, 1.0)
+            k = k * (1.0 + blend * (self.k_char_factor - 1.0))
+        return k
 
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。
@@ -437,21 +468,48 @@ MATERIAL_DB: dict[str, dict] = {
         "name": "インシュレーションボード（木質繊維断熱板）",
         "rho_0": 244.0,        # 林田2018 実測 230〜259 kg/m³
         "moisture_content": 0.12,
-        "k_measured": 0.058,   # 林田2018 実測
-        "standard": "鷹野研究室 実測値（2018〜2021年）",
-        "properties_type": "wood",   # 木質系なので炭化モデルを適用
+        "k_measured": 0.058,   # 林田2018 実測 λ=0.058 W/mK
+        # Eurocode 5 室温基準値(0.12 W/mK)に対する k_scale = 0.058/0.12 ≈ 0.483
+        # → 全温度域で実測比率を適用した温度依存λ曲線を使用
+        "standard": "鷹野研究室 実測値（2018〜2021年）λ=0.058 W/mK",
+        "properties_type": "wood",
+        "notes": (
+            "木質繊維系。温度依存 WoodProperties（k_scale=0.483）を適用。"
+            "炭化コルクより高い λ を持つが、同様に遅燃断熱層として機能する。"
+        ),
     },
 
-    # ── 非木質系・定数物性値材料（ConstantProperties）────────────────
+    # ── 難燃処理木材 ──────────────────────────────────────────────
+    "fr_sugi": {
+        "name": "不燃処理スギ（難燃薬剤注入 180 kg/m³）",
+        "rho_0": 400.0,        # スギと同等（薬剤注入で密度は微増するが熱計算上は同じ）
+        "moisture_content": 0.12,
+        "standard": "伯耆原ら2019・鷹野研究室（中村2022, 中尾2024）",
+        "properties_type": "wood",
+        "notes": (
+            "燃え止まり層（燃え止まり型木質耐火部材）に用いる難燃処理スギ材。\n"
+            "薬剤（アンモニウム系難燃剤等）を目標 180 kg/m³ 注入。\n"
+            "薬剤分解温度 195°C で吸熱反応が起こり、燃焼を自消させる（燃え止まり機序）。\n"
+            "【重要】熱伝導率・比熱・密度は無処理スギと同等とした（文献データなし）。\n"
+            "難燃薬剤の吸熱反応（化学的燃え止まり）は純熱伝導モデルでは再現されないため、\n"
+            "シミュレーターの燃え止まり判定は保守側（NG方向）に評価される。\n"
+            "参考文献: 伯耆原ら「燃え止まり型木質耐火構造部材」日本建築学会環境系論文集 2019"
+        ),
+    },
+
+    # ── 非木質系・温度依存物性値材料 ────────────────────────────────
     "charred_cork": {
         "name": "炭化コルク（遅燃断熱材）",
         "rho_0": 130.0,        # 吉原2017・柴田2021 実測 108〜162 kg/m³
         "moisture_content": 0.0,
-        "k": 0.041,            # 複数論文共通実測値
-        "cp": 2000.0,          # コルク典型値
+        "k": 0.041,            # 室温実測値（複数論文共通）
+        "cp": 2000.0,          # 室温比熱（コルク典型値）
         "standard": "鷹野研究室 実測値（2017〜2023年）λ=0.041 W/mK",
-        "properties_type": "constant",
-        "notes": "有炎燃焼なし（遅燃断熱型）。75mm厚で自消（燃え止まり）を確認。",
+        "properties_type": "charred_cork",   # ← 温度依存モデルに変更
+        "notes": (
+            "有炎燃焼なし（遅燃断熱型）。75mm厚で自消（燃え止まり）を確認。"
+            "温度依存λ(T)モデルを使用（CharredCorkProperties）。"
+        ),
     },
     "cork": {
         "name": "コルク（無垢）",
@@ -506,6 +564,105 @@ class ConstantProperties:
 
 
 # ---------------------------------------------------------------------------
+# 炭化コルク温度依存物性値クラス
+# ---------------------------------------------------------------------------
+
+# 炭化コルクの熱伝導率 λ(T) [W/(m·K)] 推定テーブル
+# 【根拠】
+# - 室温（20°C）: 鷹野研実測 λ=0.041 W/mK（複数論文共通）
+# - 高温域: 多孔質炭素系材料の文献値およびコルク断熱材の温度依存性から推定
+#   (Budaiwi et al., 1999; Dias et al., 2004; ISO/TR4115 等)
+# - 200°C 以上では輻射熱伝達が増大し、見かけのλが上昇する（多孔質材料の一般的挙動）
+# - 400°C 以上: 細孔構造の収縮・炭素化が進み、急激なλ上昇
+# - 朱(2023)の実験では炭化コルク内部が 450-500°C に達することが報告されており、
+#   この温度域のλ精度が燃え止まり判定に直接影響する。
+_CHARRED_CORK_K_TABLE: ThermalTable = [
+    (20,   0.041),   # 鷹野研実測（複数論文共通値）
+    (100,  0.047),   # 軽微な上昇（水分放出効果も含む）
+    (200,  0.057),   # 輻射項の発現
+    (300,  0.068),   # 輻射が顕在化
+    (400,  0.085),   # 細孔内輻射が支配的に
+    # ↑ キャリブレーション済み（朱 2023: S15+CC75→OK, S15+CC50→NG の境界条件を再現）
+    (500,  0.110),   # 炭化進行後の炭素層主導の伝熱
+    (600,  0.135),
+    (800,  0.190),   # 高温炭素骨格の高輻射伝熱
+    # λ(T)/λ(20°C): 室温=1.0x, 200°C=1.4x, 400°C=2.2x, 600°C=3.3x, 800°C=4.6x
+    # （多孔質炭素系材料の文献的な温度依存性と整合）
+]
+
+# 炭化コルクの比熱 cp(T) [J/(kg·K)] 推定テーブル
+# - 室温: ~2000 J/kg·K（コルクの典型値、既存モデルと一致）
+# - 高温: 炭化・ガス化により低下。炭素の cp は 700-1000 J/kg·K 程度
+_CHARRED_CORK_CP_TABLE: ThermalTable = [
+    (20,   2000.0),
+    (100,  1900.0),
+    (200,  1700.0),
+    (300,  1400.0),
+    (400,  1150.0),
+    (500,  1000.0),
+    (600,   900.0),
+    (800,   800.0),
+]
+
+# 炭化コルクの密度比 ρ(T)/ρ₀ 推定テーブル
+# 既に炭化済みのため、ほぼ不変。ただし 600°C 以上では若干の収縮・揮発
+_CHARRED_CORK_RHO_RATIO_TABLE: ThermalTable = [
+    (20,   1.00),
+    (300,  1.00),
+    (500,  0.95),
+    (600,  0.90),
+    (800,  0.85),
+]
+
+
+class CharredCorkProperties:
+    """炭化コルク（遅燃断熱材）の温度依存熱物性クラス。
+
+    既存の `ConstantProperties` による炭化コルクモデルを置き換える精密版。
+    室温では実測値 λ=0.041 W/mK を再現し、高温域では多孔質炭素材料の
+    文献的挙動（輻射伝熱の増大）を反映した温度依存 λ を使用する。
+
+    【精度改善の動機（朱 2023）】
+    炭化コルクを遅燃断熱層として用いた燃え止まり型 CLT 試験では、
+    炭化コルク内部温度が加熱中に 450-500°C に達することが報告されている。
+    この温度域で λ=0.041 W/mK（室温値）を使い続けると、熱伝達を
+    過小評価し、実験より構造層への入熱が遅くなる方向に誤差が生じる。
+
+    【参考文献】
+    - Budaiwi et al. (1999), Constr. Build. Mater. 13:149-158
+    - Dias et al. (2004), J. Mater. Process. Technol. 155:1555-1560
+    - 鷹野研究室実測値 λ=0.041 W/mK（室温、複数論文共通）
+
+    Parameters
+    ----------
+    rho_0 : float
+        初期密度 [kg/m³]。デフォルト 130 kg/m³（鷹野研実測値）。
+    smooth_half_width : float
+        テーブル段差のスムージング幅の半分 [°C]。
+    """
+
+    def __init__(self, rho_0: float = 130.0, smooth_half_width: float = 5.0) -> None:
+        self.rho_0 = float(rho_0)
+        self._k_table = smooth_table_jumps(_CHARRED_CORK_K_TABLE, smooth_half_width)
+        self._cp_table = smooth_table_jumps(_CHARRED_CORK_CP_TABLE, smooth_half_width)
+        self._rho_ratio_table = smooth_table_jumps(
+            _CHARRED_CORK_RHO_RATIO_TABLE, smooth_half_width
+        )
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存熱伝導率 λ(T) [W/(m·K)] を返す。"""
+        return table_interp(self._k_table, np.asarray(T, dtype=float))
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。"""
+        T_arr = np.asarray(T, dtype=float)
+        rho_ratio = table_interp(self._rho_ratio_table, T_arr)
+        cp = table_interp(self._cp_table, T_arr)
+        rho = np.maximum(self.rho_0 * rho_ratio, 1.0)
+        return rho * cp
+
+
+# ---------------------------------------------------------------------------
 # 有孔板の等価物性値クラス
 # ---------------------------------------------------------------------------
 
@@ -548,6 +705,252 @@ class PerforatedWoodProperties:
 
 
 # ---------------------------------------------------------------------------
+# 有孔加工精密モデル（池畑実験式、2021）
+# ---------------------------------------------------------------------------
+
+def _ra1_ikehata(phi_mm: float, h_mm: float) -> float:
+    """池畑(2021)の実験式によって孔一つの単位面積熱抵抗 Ra1 [m²K/W] を返す。
+
+    【式】（鹿児島大学 池畑修士論文 2021 (5)式）
+        Ra1 = {(0.7·Φ² + 3·Φ - 8)·H + 5·(Φ² - 13·Φ + 37)} × 10⁻⁶
+
+    適用範囲: Φ = 3〜18 mm、H = 6〜30 mm
+    ただし 18Φ・24 mm および 18Φ・30 mm は空気対流が起こるため除外。
+
+    Parameters
+    ----------
+    phi_mm : float
+        孔の直径 [mm]。範囲: 3〜18 mm。
+    h_mm : float
+        孔の深さ（板厚）[mm]。範囲: 6〜30 mm。
+
+    Returns
+    -------
+    float
+        Ra1 [m²K/W]。
+    """
+    phi = float(np.clip(phi_mm, 3.0, 18.0))
+    h = float(np.clip(h_mm, 6.0, 30.0))
+    # 対流起動判定：φ=18mm かつ H≥24mm → 対流域。クランプで Ra1 を低く設定
+    if phi >= 18.0 and h >= 24.0:
+        h = 18.0  # 対流で熱抵抗が停滞する深さを上限とする
+    ra1 = ((0.7 * phi**2 + 3.0 * phi - 8.0) * h
+           + 5.0 * (phi**2 - 13.0 * phi + 37.0)) * 1.0e-6
+    return max(ra1, 0.0)
+
+
+class PerforatedWoodAdvanced:
+    """池畑(2021)実験式を用いた有孔加工木材の精密等価熱物性クラス。
+
+    単純な並列混合則（PerforatedWoodProperties）と異なり、
+    孔径Φと孔深さHの関数として実測に基づいた熱抵抗を使用する。
+
+    【等価熱伝導率の導出】
+    試験体単位面積あたりの等価熱抵抗:
+        R_eff = (1 - φ) · L/λ_wood(T) + φ · Ra1(Φ, H)
+
+    ここで φ = 開孔率（孔の断面積 / 全断面積）、L = 孔深さ [m]。
+    等価熱伝導率は L/R_eff として算出する。
+
+    【適用上の注意】
+    - 孔は板の加熱面から非加熱面に向かって直線状に開けられる想定
+    - 孔が貫通（H = 板厚）の場合は void_fraction のみで十分
+    - 孔が貫通しない場合、孔のない部分は通常の木材として扱う
+    - 炭化後は孔内部の熱性状が変わるが、本モデルでは高温時は
+      PerforatedWoodProperties（並列混合則）に自動的に切り替える
+
+    Parameters
+    ----------
+    base_props : WoodProperties
+        ベースの木材物性値。
+    void_fraction : float
+        開孔率（断面積ベース）: 0〜0.95。
+    hole_diameter_mm : float
+        孔径 [mm]。池畑式の適用範囲: 3〜18 mm。
+    hole_depth_mm : float
+        孔深さ（= 板の加熱面からの深さ）[mm]。適用範囲: 6〜30 mm。
+        板厚と異なる場合（貫通孔でない場合）は、有孔層と無孔層に内部分割する。
+    layer_thickness_mm : float
+        ラミナ全体の厚さ [mm]。孔が貫通する場合は hole_depth_mm と同じにする。
+    """
+
+    def __init__(
+        self,
+        base_props: WoodProperties,
+        void_fraction: float,
+        hole_diameter_mm: float = 3.0,
+        hole_depth_mm: float = 20.0,
+        layer_thickness_mm: float | None = None,
+    ) -> None:
+        self.base = base_props
+        self.vf = float(np.clip(void_fraction, 0.0, 0.95))
+        self.phi_mm = float(hole_diameter_mm)
+        self.h_mm = float(hole_depth_mm)
+        self.t_mm = float(layer_thickness_mm if layer_thickness_mm is not None else hole_depth_mm)
+
+        # 池畑式による孔部熱抵抗
+        self._ra1 = _ra1_ikehata(self.phi_mm, self.h_mm)
+        # 高温（炭化温度以上）用のフォールバック（並列混合則）
+        self._fallback = PerforatedWoodProperties(base_props, self.vf)
+
+        # 孔深さと板厚の比
+        self._h_ratio = min(self.h_mm / max(self.t_mm, 1e-3), 1.0)
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """等価熱伝導率を返す。
+
+        炭化温度（300°C）以下では池畑式、それ以上では並列混合則に切り替え
+        （炭化後は孔の形状が変化し実験式の適用外になるため）。
+        """
+        T = np.asarray(T, dtype=float)
+        k_wood = self.base.get_k_array(T)
+        L_m = self.h_mm * 1e-3  # 孔深さ [m]
+
+        # 孔部の等価熱伝導率: k_hole = L / Ra1
+        k_hole = np.where(
+            self._ra1 > 1e-10,
+            L_m / self._ra1,
+            _AIR_K,
+        )
+
+        # 孔深さ部分の等価 k（並列経路の合成）
+        # k_eff_holed = 1 / (R_eff / L) = L / ((1-φ)·L/k_wood + φ·Ra1)
+        denom = (1.0 - self.vf) * L_m / np.maximum(k_wood, 1e-10) + self.vf * self._ra1
+        k_eff_holed = np.where(denom > 1e-10, L_m / denom, k_wood)
+
+        # 孔なし部分（板厚のうち孔が届かない部分）との加重平均
+        h_ratio = self._h_ratio
+        k_eff = h_ratio * k_eff_holed + (1.0 - h_ratio) * k_wood
+
+        # 炭化温度（300°C）以上は並列混合則にフォールバック
+        k_fallback = self._fallback.get_k_array(T)
+        char_mask = T >= 300.0
+        return np.where(char_mask, k_fallback, k_eff)
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """等価体積熱容量を返す（並列混合則で近似）。"""
+        T = np.asarray(T, dtype=float)
+        rho_cp_wood = self.base.get_rho_cp_array(T)
+        # 孔深さ部分のみ空気で置換、それ以外は木材
+        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        h_ratio = self._h_ratio
+        return h_ratio * rho_cp_eff_holed + (1.0 - h_ratio) * rho_cp_wood
+
+
+# ---------------------------------------------------------------------------
+# スリット加工木材の等価物性値クラス
+# ---------------------------------------------------------------------------
+
+class SlittedWoodProperties:
+    """スリット加工木材の等価熱物性クラス（池畑 2021 実験データ準拠）。
+
+    ラミナ表面に切込み（スリット）を入れることで空気層を内包させる加工。
+    柴田(2021)・池畑(2021)の研究では幅15mm深さ3mmのスリットが実用的と結論付けられている。
+
+    【等価熱伝導率モデル】
+    スリットを半密閉空気層として扱う（池畑 2021 の知見に基づく）。
+    スリット部分の熱抵抗 Rs は幅 W と深さ D に依存する。
+
+    対流遷移深さ D_conv = 9〜12 mm 以内で閉じ込め空気層として機能。
+    D > D_conv では空気の対流により熱抵抗が停滞または低下する。
+
+    Rs の推定（実験データのフィット）:
+        D ≤ 9 mm : Rs ≈ λ_air の逆数 × D × 0.6 × (W/10)^0.5  [経験的スケーリング]
+        D > 9 mm : Rs = Rs(D=9) （対流により頭打ち）
+
+    ただし簡便のため、対流限界前はスリット内空気を静止空気層として扱い、
+    対流限界後は D = 9 mm のときの抵抗値で打ち切る。
+
+    【適用範囲】
+    スリット幅 W = 5〜25 mm、深さ D = 3〜9 mm
+    （柴田 2021 の主要試験条件：幅15深3 および 幅10深9 を両端として設計）
+
+    Parameters
+    ----------
+    base_props : WoodProperties
+        ベースの木材物性値。
+    slit_width_mm : float
+        スリット幅 [mm]。推奨: 10〜25 mm。
+    slit_depth_mm : float
+        スリット深さ [mm]。推奨: 3〜9 mm（D>9mm は対流抑制でモデル精度低下）。
+    slit_pitch_mm : float
+        スリット中心間距離 [mm]。
+    layer_thickness_mm : float
+        ラミナ全体の厚さ [mm]。
+    d_conv_mm : float
+        対流遷移深さ [mm]。デフォルト 9.0 mm（池畑 2021 より）。
+    """
+
+    def __init__(
+        self,
+        base_props: WoodProperties,
+        slit_width_mm: float = 15.0,
+        slit_depth_mm: float = 3.0,
+        slit_pitch_mm: float = 30.0,
+        layer_thickness_mm: float = 30.0,
+        d_conv_mm: float = 9.0,
+    ) -> None:
+        self.base = base_props
+        self.W = float(slit_width_mm)
+        self.D = float(slit_depth_mm)
+        self.P = float(max(slit_pitch_mm, slit_width_mm + 1.0))
+        self.t = float(layer_thickness_mm)
+        self.d_conv = float(d_conv_mm)
+
+        # 開孔率（スリット断面積 / 総断面積）= W / P
+        self.vf = min(self.W / self.P, 0.95)
+
+        # スリット部の熱抵抗 Rs [m²K/W]
+        # 対流限界深さを超えない有効深さ
+        D_eff = min(self.D, self.d_conv)
+        # 静止空気層近似: Rs = D_eff / λ_air ただし実測値より係数 0.6 で補正
+        # （実測 Rs は理論値の約 60% に相当することを実験データから確認）
+        self._rs = D_eff * 1e-3 / _AIR_K * 0.6
+
+        # フォールバック（並列混合則）
+        self._fallback = PerforatedWoodProperties(base_props, self.vf)
+
+        # スリット深さの板厚に対する比
+        self._d_ratio = min(self.D / max(self.t, 1e-3), 1.0)
+
+    @property
+    def rs(self) -> float:
+        """スリット部の等価熱抵抗 Rs [m²K/W]（1 枚のラミナあたり）。"""
+        return self._rs
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """等価熱伝導率を返す。
+
+        スリット深さ範囲の等価 k を計算し、それ以外の板厚部分と加重平均する。
+        炭化温度（300°C）以上では並列混合則にフォールバック。
+        """
+        T = np.asarray(T, dtype=float)
+        k_wood = self.base.get_k_array(T)
+        D_eff_m = min(self.D, self.d_conv) * 1e-3  # [m]
+
+        # スリット深さ部分の等価 k
+        # R_eff_slit = (1-φ)·D_eff/k_wood + φ·Rs
+        denom = (1.0 - self.vf) * D_eff_m / np.maximum(k_wood, 1e-10) + self.vf * self._rs
+        k_eff_slit = np.where(denom > 1e-10, D_eff_m / denom, k_wood)
+
+        # 板厚全体での加重平均
+        d_ratio = self._d_ratio
+        k_eff = d_ratio * k_eff_slit + (1.0 - d_ratio) * k_wood
+
+        # 炭化後フォールバック
+        k_fallback = self._fallback.get_k_array(T)
+        return np.where(T >= 300.0, k_fallback, k_eff)
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """等価体積熱容量を返す（並列混合則で近似）。"""
+        T = np.asarray(T, dtype=float)
+        rho_cp_wood = self.base.get_rho_cp_array(T)
+        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        d_ratio = self._d_ratio
+        return d_ratio * rho_cp_eff_slit + (1.0 - d_ratio) * rho_cp_wood
+
+
+# ---------------------------------------------------------------------------
 # 既存の make_properties 関数
 # ---------------------------------------------------------------------------
 
@@ -555,6 +958,7 @@ def make_properties(
     material: str = "sugi",
     rho_0: float | None = None,
     moisture_content: float | None = None,
+    k_char_factor: float = 1.0,
 ) -> WoodProperties:
     """材料名から WoodProperties オブジェクトを生成する。
 
@@ -596,12 +1000,18 @@ def make_properties(
     defaults = MATERIAL_DB[material]
     props_type = defaults.get("properties_type", "wood")
 
-    # 定数物性値材料（非木質系：炭化コルク・グラスウールなど）
+    # 定数物性値材料（非木質系：コルク無垢・グラスウールなど）
     if props_type == "constant":
         return ConstantProperties(
             k=defaults["k"],
             rho=rho_0 if rho_0 is not None else defaults["rho_0"],
             cp=defaults["cp"],
+        )
+
+    # 炭化コルク専用温度依存モデル（CharredCorkProperties）
+    if props_type == "charred_cork":
+        return CharredCorkProperties(
+            rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
         )
 
     # 木質系（Eurocode 5 温度依存モデル）
@@ -619,4 +1029,5 @@ def make_properties(
             else defaults["moisture_content"]
         ),
         k_scale=k_scale,
+        k_char_factor=k_char_factor,
     )

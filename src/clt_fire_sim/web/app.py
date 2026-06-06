@@ -1,4 +1,4 @@
-"""
+﻿"""
 app.py
 ======
 【役割】
@@ -119,7 +119,7 @@ with tab_config:
                 "密度 [kg/m³]": layer.rho_0_kg_m3,
                 "含水率 [%]": f"{layer.moisture_content*100:.0f}",
             })
-        st.dataframe(pd.DataFrame(layer_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(layer_rows), hide_index=True)
 
     with col_right:
         st.markdown("### 解析条件")
@@ -280,7 +280,7 @@ with tab_result:
                 "温度上昇 [K]": f"{jdg['unheated_face_rise_K']:.1f}",
             })
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
 
         # ── 炭化速度 ──────────────────────────────────────────────────
         from clt_fire_sim.report import compute_charring_rate
@@ -489,7 +489,6 @@ with tab_history:
             if _cmp_rows:
                 st.dataframe(
                     pd.DataFrame(_cmp_rows),
-                    use_container_width=True,
                     hide_index=True,
                 )
 
@@ -524,7 +523,7 @@ with tab_history:
                         for k, v in sorted(_ev.items())
                     ]
                     st.dataframe(
-                        pd.DataFrame(_rows), use_container_width=True, hide_index=True
+                        pd.DataFrame(_rows), hide_index=True
                     )
 
                 if _beta is not None:
@@ -612,3 +611,4 @@ st.caption(
     "CLT 耐火シミュレータ v0.4 | Eurocode 5 (EN 1995-1-2) 準拠 | "
     "Phase 7.4 — 履歴・比較・ビューア連携"
 )
+

@@ -260,6 +260,101 @@ class ISO834HeatedBC:
         return h_total, T_eff, 0.0
 
 
+class CoolingFurnaceBC:
+    """加熱終了後の炉内自然冷却境界条件（加熱面側）。
+
+    ISO 834 加熱試験では、所定の加熱時間終了後に炉内が自然冷却する。
+    この BC は炉内温度の指数減衰を模擬し、放冷フェーズの伝熱計算を可能にする。
+
+    【炉内温度の減衰モデル】
+        T_furnace(t') = T_ambient + (T_end - T_ambient) × exp(-t' / τ)
+    ここで t' = 加熱終了からの経過時間 [s]、τ = 冷却時定数（デフォルト 4500 s）。
+
+    【実験根拠（鷹野研究室 2023, 2024, 2025）】
+    小型電気マッフル炉での観察から、60 分加熱（炉内温度 ~945°C）終了後、
+    炉内温度は概ね指数的に低下し、約 3 時間（180 分）で ~100°C まで降下する。
+    τ ≈ 75 分 (4500 s) はこのデータより推定した値である。
+
+    Parameters
+    ----------
+    T_end_C : float
+        加熱終了時点の炉内温度 [°C]。通常は t_heat_end における ISO 834 温度。
+    t_heat_end_s : float
+        加熱終了時刻（絶対時刻）[s]。
+    tau_s : float
+        炉内冷却時定数 [s]。デフォルト 4500 s（75 分）。
+    alpha_c : float
+        対流熱伝達率 [W/(m²·K)]。加熱終了後は ISO 834 の 25 W/(m²·K) を維持。
+    eps_m : float
+        材料表面放射率 [-]。
+    eps_f : float
+        炉内壁放射率 [-]（加熱時と同じ 1.0）。
+    T_ambient : float
+        最終到達温度（周囲温度）[°C]。
+    """
+
+    bc_type: str = "robin_cooling_furnace"
+
+    def __init__(
+        self,
+        T_end_C: float,
+        t_heat_end_s: float,
+        tau_s: float = 2700.0,  # 45分 = 2700s（旧デフォルト 4500s から修正）
+        alpha_c: float = ALPHA_C_HEATED,
+        eps_m: float = EPS_M,
+        eps_f: float = EPS_F,
+        T_ambient: float = T_AMBIENT,
+    ) -> None:
+        self.T_end_C = T_end_C
+        self.t_heat_end_s = t_heat_end_s
+        self.tau_s = tau_s
+        self.alpha_c = alpha_c
+        self.eps_m = eps_m
+        self.eps_f = eps_f
+        self.T_ambient = T_ambient
+
+    def get_furnace_temperature(self, t_s: float) -> float:
+        """時刻 t_s [s] における炉内温度を返す [°C]。
+
+        加熱終了前は ISO 834 の最終温度を返す（この BC が使われることはないが安全のため）。
+        加熱終了後は指数減衰モデルを適用する。
+        """
+        t_prime = max(0.0, t_s - self.t_heat_end_s)
+        T_f = self.T_ambient + (self.T_end_C - self.T_ambient) * np.exp(-t_prime / self.tau_s)
+        return float(T_f)
+
+    def get_matrix_contrib(
+        self, T_s_lagged: float, t_s: float
+    ) -> tuple[float, float, float]:
+        """FVM 行列への寄与項を返す（輻射の線形化版、ISO834HeatedBC と同形式）。
+
+        Parameters
+        ----------
+        T_s_lagged : float
+            前ステップの表面温度 T_s^n [°C]。
+        t_s : float
+            現在の解析時刻 [秒]。
+
+        Returns
+        -------
+        h_total, T_eff, q_extra : tuple[float, float, float]
+        """
+        T_g = self.get_furnace_temperature(t_s)
+        T_g_K = T_g + 273.15
+        T_s_K = T_s_lagged + 273.15
+
+        q_net_n = (
+            self.alpha_c * (T_g - T_s_lagged)
+            + self.eps_m * self.eps_f * SIGMA * (T_g_K**4 - T_s_K**4)
+        )
+
+        h_rad = 4.0 * self.eps_m * self.eps_f * SIGMA * T_s_K**3
+        h_total = self.alpha_c + h_rad
+        T_eff = T_s_lagged + q_net_n / h_total
+
+        return h_total, T_eff, 0.0
+
+
 class ConvRadCoolingBC:
     """自然対流＋輻射の冷却境界条件（非加熱面）。
 

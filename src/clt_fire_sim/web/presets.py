@@ -458,6 +458,115 @@ PRESETS: dict[str, dict[str, Any]] = {
     # 🔬 研究室試験体 ― 吉原2017 断熱性能最高構成
     # ═══════════════════════════════════════════════════════════
 
+    # ═══════════════════════════════════════════════════════════
+    # 🔥 燃え止まり型CLT ― 不燃木板（難燃処理スギ）シリーズ
+    #    出典: 伯耆原ら2019 / 中村2022 / 中尾2024 / 朱2025
+    # ═══════════════════════════════════════════════════════════
+
+    "[中村2022/中尾2024] 標準試験体 S24+FR50+CLT90mm（燃え止まり型基準）": {
+        "description": (
+            "燃え止まり型CLTの標準試験体（基準構成）。\n"
+            "燃えしろ層: スギ 24mm ／ 燃え止まり層: 不燃処理スギ 50mm（薬剤注入180 kg/m³）"
+            "／ 構造CLT: スギ 90mm。\n\n"
+            "【文献実験結果】中尾2024・朱2023 で1時間耐火性能（燃え止まり）を確認。\n\n"
+            "【シミュレーターの注意】難燃薬剤の吸熱反応（195°C分解→自消）は純熱伝導モデルで"
+            "は再現できません。このため燃え止まり判定は「保守側（NG方向）」に評価されます。\n"
+            "温度分布・炭化深さの参照には使えますが、燃え止まりの合否は実験値を参照してください。"
+        ),
+        "specimen": {
+            "name": "標準試験体 S24+FR50+CLT90",
+            "layers": [
+                {"name": "燃えしろ層（スギ）", "material": "sugi",
+                 "thickness_mm": 24.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "燃え止まり層（不燃処理スギ 50mm）", "material": "fr_sugi",
+                 "thickness_mm": 50.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第1層（スギ）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第2層（スギ）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第3層（スギ・非加熱面）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+            ],
+        },
+        "simulation": {
+            "t_end_min": 60.0,
+            "n_cells_per_layer": 10,
+            "cooling_time_h": 4.0,
+            "cooling_tau_min": 45.0,
+        },
+        "evaluation": {
+            "char_stop_enabled": False,   # FR化学反応未モデル化のため参考値のみ
+            "structural_layer_index": 2,
+        },
+    },
+
+    "[中村2022] 基準構成（薄め）S20+FR50+CLT90mm": {
+        "description": (
+            "中村2022の基準構成バリエーション。燃えしろ層を20mmに薄めた検証ケース。\n"
+            "燃えしろ20mm：燃え止まり25mm（FR25）で1時間耐火性能確認（中村2022）。\n"
+            "【注意】難燃薬剤の吸熱反応は熱伝導モデル外。燃え止まり判定は参考値。"
+        ),
+        "specimen": {
+            "name": "基準構成バリ S20+FR50+CLT90",
+            "layers": [
+                {"name": "燃えしろ層（スギ）", "material": "sugi",
+                 "thickness_mm": 20.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "燃え止まり層（不燃処理スギ 50mm）", "material": "fr_sugi",
+                 "thickness_mm": 50.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第1層（スギ）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第2層（スギ）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第3層（スギ・非加熱面）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+            ],
+        },
+        "simulation": {
+            "t_end_min": 60.0,
+            "n_cells_per_layer": 10,
+            "cooling_time_h": 4.0,
+            "cooling_tau_min": 45.0,
+        },
+        "evaluation": {
+            "char_stop_enabled": False,
+            "structural_layer_index": 2,
+        },
+    },
+
+    "[中尾2024] FR標準 vs 小片ラミナ 比較（S24+FR50 基準）": {
+        "description": (
+            "中尾2024の比較実験における標準試験体。\n"
+            "不燃木小片ラミナ（FRC）や無機物小片ラミナとの性能比較の基準として用いられた。\n"
+            "燃えしろ層スギ24mm + 不燃処理スギ50mm + CLT90mm（合計164mm）。\n"
+            "実験では燃え止まり（自消）を確認。シミュレーターは温度分布の参照用途向け。"
+        ),
+        "specimen": {
+            "name": "S24+FR50+CLT90（中尾2024標準）",
+            "layers": [
+                {"name": "燃えしろ層（スギ 24mm）", "material": "sugi",
+                 "thickness_mm": 24.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "燃え止まり層（不燃処理スギ 50mm）", "material": "fr_sugi",
+                 "thickness_mm": 50.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第1層", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第2層", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+                {"name": "構造CLT 第3層（非加熱面）", "material": "sugi",
+                 "thickness_mm": 30.0, "rho_0_kg_m3": 400.0, "moisture_content": 0.12},
+            ],
+        },
+        "simulation": {
+            "t_end_min": 60.0,
+            "n_cells_per_layer": 10,
+            "cooling_time_h": 4.0,
+            "cooling_tau_min": 45.0,
+        },
+        "evaluation": {
+            "char_stop_enabled": False,
+            "structural_layer_index": 2,
+        },
+    },
+
     "[吉原2017] スギ+炭化コルク30mm+CLT 断熱最高（U=0.46）": {
         "description": (
             "吉原学部2017 最良断熱試験体。スギ30mm＋炭化コルク30mm＋CLT90mm（150mm）。\n"

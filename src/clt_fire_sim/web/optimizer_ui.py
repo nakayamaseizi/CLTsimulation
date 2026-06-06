@@ -1,4 +1,4 @@
-"""
+﻿"""
 optimizer_ui.py
 ===============
 【役割】
@@ -246,7 +246,7 @@ def _render_results(opt_state: Any, config: Any) -> None:
     with col_l:
         st.markdown("#### 断面図（孔の配置）")
         fig_cross = _make_cross_section_fig(best.pattern, Ly, Lz)
-        st.plotly_chart(fig_cross, use_container_width=True)
+        st.plotly_chart(fig_cross)  # noqa: deprecated param kept for compat
         st.metric("空洞率", f"{best.pattern.volume_fraction * 100:.1f} %")
 
     with col_r:
@@ -298,7 +298,7 @@ def _render_results(opt_state: Any, config: Any) -> None:
             hovermode="x unified",
             legend=dict(x=0.02, y=0.98),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)
 
         # 非加熱面温度の比較
         st.markdown("### 🌡️ 非加熱面温度比較")
@@ -341,7 +341,7 @@ def _render_results(opt_state: Any, config: Any) -> None:
             hovermode="x unified",
             legend=dict(x=0.02, y=0.98),
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2)
 
     # ── ビューアに送るボタン ─────────────────────────────────────
     if best.result:
@@ -424,7 +424,7 @@ def _show_comparison_table(opt_state: Any) -> None:
 
     if rows:
         df = pd.DataFrame(rows)
-        st.dataframe(df.drop(columns=["評価"]), use_container_width=True, hide_index=True)
+        st.dataframe(df.drop(columns=["評価"]), hide_index=True)
 
 
 def _make_cross_section_fig(pattern: Any, Ly: float, Lz: float) -> Any:
@@ -470,4 +470,6 @@ def _show_pattern_grid(patterns: list, Ly: float, Lz: float) -> None:
             st.caption(f"**{pat.name}**\nvf={pat.volume_fraction*100:.0f}%")
             fig = _make_cross_section_fig(pat, Ly, Lz)
             fig.update_layout(height=150, margin=dict(l=5, r=5, t=5, b=20))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
+
+

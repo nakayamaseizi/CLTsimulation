@@ -1,0 +1,68 @@
+# CLT 耐火シミュレーション設定
+# ==============================
+# 試験体: 有孔加工スギラミナを含む多機能CLT（付加型・中村 2020/柴田 2021 準拠）
+#
+# 【試験体構成】
+#   付加型多機能CLT（U値 0.35 W/㎡K 目標）
+#   層1（有孔加工燃え代層）: スギ有孔加工ラミナ × 11層 連層（6mm × 11 = 66mm, 開孔率27.6%）
+#   ← 池畑(2021)実験式を使用した精密有孔加工モデル（perforated_wood_advanced）
+#   層2（構造CLT）: スギ 90mm（3層30mm）
+#
+# 【実験根拠】
+#   柴田(2021): 有孔加工付加型（開孔率27.6%, スギ6mm×11層）は60分準耐火性能を有する
+
+specimen:
+  name: "有孔加工付加型CLT（開孔率27.6%、Φ3mm、H6mm）"
+  layers:
+    # 層1: 有孔加工スギラミナ群（連層として66mm厚）
+    #   - 池畑実験式（perforated_wood_advanced）使用
+    #   - 孔径Φ=3mm, 孔深さH=6mm（貫通孔）, 開孔率27.6%
+    - material: sugi
+      thickness_mm: 66.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+      material_type: perforated_wood_advanced
+      void_fraction: 0.276      # 開孔率 27.6%（柴田 2021 より）
+      hole_diameter_mm: 3.0     # 孔径 3mm（池畑式 適用範囲内）
+      hole_depth_mm: 6.0        # 孔深さ 6mm（板厚と同じ = 貫通孔）
+    # 層2: 構造CLT（スギ 90mm = 3層30mm）
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+    - material: sugi
+      thickness_mm: 30.0
+      rho_0_kg_m3: 400.0
+      moisture_content: 0.12
+
+boundary:
+  heated:
+    type: iso834
+    alpha_c: 25.0
+    eps_m: 0.8
+    eps_f: 1.0
+  unheated:
+    type: conv_rad_cooling
+    alpha_c: 9.0
+    eps_m: 0.8
+    T_inf: 20.0
+
+simulation:
+  t_end_min: 60.0
+  dt_base_s: 5.0
+  dt_min_s: 1.0
+  dt_max_s: 10.0
+  n_picard: 3
+  n_cells_per_layer: 10
+  mesh_ratio: 1.05
+  record_interval_s: 30.0
+
+evaluation:
+  char_temp: 300.0
+  eval_times_min:
+    - 60.0
+  unheated_face_temp_limit: 160.0

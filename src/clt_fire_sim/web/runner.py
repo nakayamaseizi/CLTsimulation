@@ -181,12 +181,9 @@ def _run_simulation_thread(
     """
     import numpy as np
 
-    from clt_fire_sim.boundary import ConvRadCoolingBC, ISO834HeatedBC
-    from clt_fire_sim.materials import (
-        ConstantProperties,
-        PerforatedWoodProperties,
-        make_properties,
-    )
+    from clt_fire_sim.boundary import ConvRadCoolingBC, CoolingFurnaceBC, ISO834HeatedBC
+    from clt_fire_sim.boundary import iso834_temperature
+    from clt_fire_sim.runner import _build_layer_properties, _evaluate_char_stop
     from clt_fire_sim.report import compute_charring_rate, evaluate_performance
     from clt_fire_sim.solver.fvm_1d import (
         FVM1DSolver,
@@ -212,8 +209,11 @@ def _run_simulation_thread(
         )
 
         # ---- 物性値 ----
-        layer_props = [_make_layer_props(layer) for layer in spec.layers]
-        props = MultiLayerProperties(layer_thicknesses_m, layer_props)
+        layer_props = [_build_layer_properties(layer) for layer in spec.layers]
+        contact_resistances = [
+            getattr(layer, "contact_resistance_m2KW", 0.0) for layer in spec.layers
+        ]
+        props = MultiLayerProperties(layer_thicknesses_m, layer_props, contact_resistances)
         props.setup(mesh.x_centers)
 
         # ---- 境界条件 ----
@@ -234,11 +234,30 @@ def _run_simulation_thread(
         t_end_s = sim.t_end_min * 60.0
         eval_times_s = [t * 60.0 for t in config.evaluation.eval_times_min]
 
+        # ---- 放冷フェーズ境界条件 ----
+        t_cooling_s = 0.0
+        bc_left_cooling = None
+        if sim.cooling_time_h > 0.0:
+            T_at_heat_end = iso834_temperature(sim.t_end_min)
+            bc_left_cooling = CoolingFurnaceBC(
+                T_end_C=T_at_heat_end,
+                t_heat_end_s=t_end_s,
+                tau_s=sim.cooling_tau_min * 60.0,
+                alpha_c=bc_cfg.heated.alpha_c,
+                eps_m=bc_cfg.heated.eps_m,
+                eps_f=bc_cfg.heated.eps_f,
+                T_ambient=bc_cfg.unheated.T_inf,
+            )
+            t_cooling_s = sim.cooling_time_h * 3600.0
+
+        # 全体時間（加熱 + 放冷）でプログレスを計算
+        t_total_s = t_end_s + t_cooling_s
+
         # ---- 進捗コールバック ----
         def _progress_cb(current_t: float, t_end: float, T: np.ndarray) -> None:
             """記録タイミングごとに状態を更新する。"""
             elapsed = time.monotonic() - wall_start
-            frac = current_t / t_end if t_end > 0 else 0.0
+            frac = current_t / t_total_s if t_total_s > 0 else 0.0
             est_remaining = (elapsed / frac - elapsed) if frac > 1e-6 else 0.0
 
             with _lock:
@@ -260,18 +279,27 @@ def _run_simulation_thread(
             eval_times=eval_times_s,
             progress_callback=_progress_cb,
             stop_event=_stop_event,
+            t_cooling=t_cooling_s,
+            bc_left_cooling=bc_left_cooling,
+            cooling_dt_base=max(sim.dt_base_s, 30.0),
         )
 
         # ---- 中断チェック ----
         if _stop_event.is_set():
             with _lock:
                 _sim_state.status = "stopped"
-                _sim_state.progress = _sim_state.current_time_min / sim.t_end_min
+                _sim_state.progress = _sim_state.current_time_min / (t_total_s / 60.0)
             return
 
         # ---- 性能評価 ----
         result["evaluation"] = evaluate_performance(result, config=config)
         result["config"] = config
+
+        # ---- 燃え止まり判定 ----
+        if config.evaluation.char_stop_enabled and t_cooling_s > 0.0:
+            result["char_stop"] = _evaluate_char_stop(result, config, mesh)
+        else:
+            result["char_stop"] = None
 
         # ---- 結果保存（HDF5 + レポート）----
         from clt_fire_sim.report import generate_report
@@ -309,39 +337,9 @@ def _extract_char_depth_mm(mesh: Any, T: Any) -> float:
     return float(x[charred].max()) * 1000.0
 
 
+# _make_layer_props は clt_fire_sim.runner._build_layer_properties に統合済み
+# この関数は後方互換性のため残す（呼び出し元がなければ不要）
 def _make_layer_props(layer: Any) -> Any:
-    """LayerConfig から適切な物性値オブジェクトを生成する。
-
-    material_type に応じて以下を返す:
-    - "wood"            : WoodProperties（Eurocode 5 温度依存モデル）
-    - "perforated_wood" : PerforatedWoodProperties（等価均質物性値）
-    - "custom"          : ConstantProperties（ユーザー定義定数物性値）
-    """
-    from clt_fire_sim.materials import (
-        ConstantProperties,
-        PerforatedWoodProperties,
-        make_properties,
-    )
-
-    mat_type = getattr(layer, "material_type", "wood")
-
-    if mat_type == "custom":
-        k = getattr(layer, "k_W_mK", None) or 0.12
-        cp = getattr(layer, "cp_J_kgK", None) or 1600.0
-        return ConstantProperties(k=k, rho=layer.rho_0_kg_m3, cp=cp)
-
-    elif mat_type == "perforated_wood":
-        base = make_properties(
-            material=layer.material,
-            rho_0=layer.rho_0_kg_m3,
-            moisture_content=layer.moisture_content,
-        )
-        vf = getattr(layer, "void_fraction", 0.0)
-        return PerforatedWoodProperties(base, vf)
-
-    else:  # "wood" または未指定
-        return make_properties(
-            material=layer.material,
-            rho_0=layer.rho_0_kg_m3,
-            moisture_content=layer.moisture_content,
-        )
+    """[後方互換] _build_layer_properties の旧名称。"""
+    from clt_fire_sim.runner import _build_layer_properties
+    return _build_layer_properties(layer)
