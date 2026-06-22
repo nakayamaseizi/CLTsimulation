@@ -39,7 +39,7 @@ def render_pareto_tab() -> None:
 
         with col_d:
             st.markdown("**🔵 孔径 d [mm]**")
-            d_presets = [0, 6, 10, 14, 18, 24, 30, 36, 40]
+            d_presets = [0, 6, 12, 18, 24, 30, 36, 40]
             d_selected = st.multiselect(
                 "孔径候補を選択",
                 d_presets,
