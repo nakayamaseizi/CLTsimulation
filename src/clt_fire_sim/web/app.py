@@ -83,12 +83,13 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 st.title("CLT 耐火シミュレーション")
 
-tab_config, tab_run, tab_result, tab_3d, tab_opt, tab_history = st.tabs([
+tab_config, tab_run, tab_result, tab_3d, tab_opt, tab_pareto, tab_history = st.tabs([
     "📋 設定確認",
     "▶️ 解析実行",
     "📊 結果",
     "🔬 ビューア",
     "🔍 孔最適化",
+    "🎯 パレート最適化",
     "📂 履歴",
 ])
 
@@ -449,7 +450,14 @@ with tab_opt:
     render_optimizer_tab(config)
 
 # ===========================================================================
-# タブ6：履歴（Phase 7.4）
+# タブ6：パレート最適化
+# ===========================================================================
+with tab_pareto:
+    from clt_fire_sim.web.pareto_ui import render_pareto_tab
+    render_pareto_tab()
+
+# ===========================================================================
+# タブ7：履歴（Phase 7.4）
 # ===========================================================================
 with tab_history:
     from clt_fire_sim.web.result_store import load_result_hdf5, scan_results
