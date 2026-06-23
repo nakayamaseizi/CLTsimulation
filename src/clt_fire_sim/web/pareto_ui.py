@@ -165,120 +165,245 @@ def render_pareto_tab() -> None:
 # 結果描画
 # ---------------------------------------------------------------------------
 
+# 孔径 d → 色のマッピング（固定カラーパレット）
+_D_COLORS: dict[float, str] = {
+    0.0:  "#90A4AE",  # 無孔 = グレー
+    6.0:  "#42A5F5",  # 水色
+    12.0: "#1565C0",  # 青
+    14.0: "#26C6DA",  # シアン
+    18.0: "#66BB6A",  # 緑
+    24.0: "#FFA726",  # オレンジ
+    30.0: "#EF5350",  # 赤
+    36.0: "#AB47BC",  # 紫
+    40.0: "#8D6E63",  # ブラウン
+}
+
+# ラミナ厚 → Plotly マーカー形状
+_T_SYMBOLS: dict[float, str] = {12.0: "circle", 24.0: "square"}
+
+
 def _render_pareto_results(state) -> None:
-    """パレートフロントの可視化と解一覧テーブル。"""
+    """フィルタ付きパレートフロントの可視化と解一覧テーブル。"""
     import plotly.graph_objects as go
     import pandas as pd
 
     all_cands = [c for c in state.candidates if c.T_clt_60 < float("inf") and not c.error]
     pareto_pts = state.pareto_front
 
+    if not all_cands:
+        st.warning("有効な候補がありません。")
+        return
+
     st.success(
         f"最適化完了: {len(all_cands)} 候補を評価 → "
         f"パレート最適解 **{len(pareto_pts)} 点** を特定"
     )
 
-    # ─── パレートフロント 散布図 ─────────────────────────────────────
+    # ユニーク値を取得
+    unique_d = sorted(set(c.d_mm for c in all_cands))
+    unique_p = sorted(set(c.p_mm for c in all_cands))
+    unique_t = sorted(set(c.t_lam_mm for c in all_cands))
+
+    # ─── 表示フィルタ チェックボックス ─────────────────────────────
+    with st.expander("🔍 グラフ表示フィルタ", expanded=True):
+        col_fd, col_fp, col_ft = st.columns(3)
+
+        with col_fd:
+            st.markdown("**🔵 孔径 d [mm]**")
+            # 全選択 / 全解除
+            all_d_on = st.checkbox("すべて選択", value=True, key="filter_d_all")
+            st.divider()
+            sel_d: dict[float, bool] = {}
+            for d in unique_d:
+                label = f"d = {int(d)} mm" + ("  （無孔）" if d == 0 else "")
+                color = _D_COLORS.get(d, "#999")
+                sel_d[d] = st.checkbox(
+                    label, value=all_d_on, key=f"filter_d_{int(d)}"
+                )
+
+        with col_fp:
+            st.markdown("**📐 ピッチ p [mm]**")
+            all_p_on = st.checkbox("すべて選択", value=True, key="filter_p_all")
+            st.divider()
+            sel_p: dict[float, bool] = {}
+            for p in unique_p:
+                sel_p[p] = st.checkbox(
+                    f"p = {int(p)} mm", value=all_p_on, key=f"filter_p_{int(p)}"
+                )
+
+        with col_ft:
+            st.markdown("**📏 ラミナ厚 [mm]**")
+            all_t_on = st.checkbox("すべて選択", value=True, key="filter_t_all")
+            st.divider()
+            sel_t: dict[float, bool] = {}
+            for t in unique_t:
+                sym = _T_SYMBOLS.get(t, "circle")
+                sym_icon = "●" if sym == "circle" else "■"
+                sel_t[t] = st.checkbox(
+                    f"{sym_icon}  {int(t)} mm ラミナ", value=all_t_on, key=f"filter_t_{int(t)}"
+                )
+
+    # フィルタ適用
+    def _visible(c) -> bool:
+        return (
+            sel_d.get(c.d_mm, True)
+            and sel_p.get(c.p_mm, True)
+            and sel_t.get(c.t_lam_mm, True)
+        )
+
+    filtered_all = [c for c in all_cands if _visible(c)]
+    filtered_pareto = [c for c in pareto_pts if _visible(c)]
+
+    # ─── Plotlyグラフ ───────────────────────────────────────────────
     fig = go.Figure()
 
-    # 全候補（薄い点）
-    if all_cands:
+    # 全体パレートフロントの参照線（常時表示・グレー破線）
+    if pareto_pts:
+        pf_sorted = sorted(pareto_pts, key=lambda c: c.R_value)
         fig.add_trace(go.Scatter(
-            x=[c.R_value for c in all_cands],
-            y=[c.T_clt_60 for c in all_cands],
+            x=[c.R_value for c in pf_sorted],
+            y=[c.T_clt_60 for c in pf_sorted],
+            mode="lines",
+            line=dict(color="rgba(160,160,160,0.5)", width=1.5, dash="dash"),
+            name="パレートフロント（全体参考）",
+            hoverinfo="skip",
+        ))
+
+    # 孔径ごとにトレースを分けて描画（ラミナ厚でシンボルを変える）
+    for d in unique_d:
+        if not sel_d.get(d, True):
+            continue
+        d_cands = [c for c in filtered_all if c.d_mm == d]
+        if not d_cands:
+            continue
+
+        color = _D_COLORS.get(d, "#888888")
+        d_label = f"d={int(d)}mm" + ("（無孔）" if d == 0 else "")
+
+        symbols = [_T_SYMBOLS.get(c.t_lam_mm, "circle") for c in d_cands]
+        # 点のサイズ = 総厚に比例（最小6、最大16）
+        sizes = [6 + (c.total_mm - 12) / (96 - 12) * 10 for c in d_cands]
+
+        fig.add_trace(go.Scatter(
+            x=[c.R_value for c in d_cands],
+            y=[c.T_clt_60 for c in d_cands],
             mode="markers",
             marker=dict(
-                color=[c.total_mm for c in all_cands],
-                colorscale="Blues",
-                size=5,
-                opacity=0.35,
-                colorbar=dict(title="総厚 [mm]", thickness=12),
-                showscale=True,
+                color=color,
+                symbol=symbols,
+                size=sizes,
+                opacity=0.70,
+                line=dict(width=0.8, color="white"),
             ),
-            name="全候補",
+            name=d_label,
+            legendgroup=f"d_{int(d)}",
             customdata=np.column_stack([
-                [c.d_mm for c in all_cands],
-                [c.p_mm for c in all_cands],
-                [c.vf for c in all_cands],
-                [c.total_mm for c in all_cands],
-                [c.t_lam_mm for c in all_cands],
-                [c.n_lam for c in all_cands],
+                [c.d_mm for c in d_cands],
+                [c.p_mm for c in d_cands],
+                [c.vf for c in d_cands],
+                [c.total_mm for c in d_cands],
+                [c.t_lam_mm for c in d_cands],
+                [c.n_lam for c in d_cands],
             ]),
             hovertemplate=(
-                "R = %{x:.3f} m²K/W<br>"
-                "CLT温度@60分 = %{y:.1f}°C<br>"
-                "孔径 d = %{customdata[0]:.0f} mm<br>"
-                "ピッチ p = %{customdata[1]:.0f} mm<br>"
-                "空洞率 = %{customdata[2]:.3f}<br>"
-                "総厚 = %{customdata[3]:.0f} mm<br>"
-                "ラミナ = %{customdata[4]:.0f}mm × %{customdata[5]:.0f}枚"
+                f"<b>{d_label}</b><br>"
+                "p=%{customdata[1]:.0f}mm | vf=%{customdata[2]:.3f}<br>"
+                "総厚=%{customdata[3]:.0f}mm "
+                "(%{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚)<br>"
+                "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
         ))
 
-    # パレートフロント（赤い点 + 線）
-    if pareto_pts:
-        p_sorted = sorted(pareto_pts, key=lambda c: c.R_value)
+    # 表示中のパレート最適解（赤い星）
+    if filtered_pareto:
+        fp_sorted = sorted(filtered_pareto, key=lambda c: c.R_value)
         fig.add_trace(go.Scatter(
-            x=[c.R_value for c in p_sorted],
-            y=[c.T_clt_60 for c in p_sorted],
+            x=[c.R_value for c in fp_sorted],
+            y=[c.T_clt_60 for c in fp_sorted],
             mode="markers+lines",
-            marker=dict(color="red", size=10, symbol="star"),
-            line=dict(color="red", width=1.5, dash="dot"),
-            name="★ パレートフロント",
+            marker=dict(
+                color="crimson", size=14, symbol="star",
+                line=dict(width=1, color="darkred"),
+            ),
+            line=dict(color="crimson", width=1.5),
+            name="★ パレート最適解（表示中）",
             customdata=np.column_stack([
-                [c.d_mm for c in p_sorted],
-                [c.p_mm for c in p_sorted],
-                [c.vf for c in p_sorted],
-                [c.total_mm for c in p_sorted],
-                [c.t_lam_mm for c in p_sorted],
-                [c.n_lam for c in p_sorted],
+                [c.d_mm for c in fp_sorted],
+                [c.p_mm for c in fp_sorted],
+                [c.vf for c in fp_sorted],
+                [c.total_mm for c in fp_sorted],
+                [c.t_lam_mm for c in fp_sorted],
+                [c.n_lam for c in fp_sorted],
             ]),
             hovertemplate=(
                 "<b>★ パレート最適解</b><br>"
-                "R = %{x:.3f} m²K/W<br>"
-                "CLT温度@60分 = %{y:.1f}°C<br>"
-                "孔径 d = %{customdata[0]:.0f} mm<br>"
-                "ピッチ p = %{customdata[1]:.0f} mm<br>"
-                "空洞率 vf = %{customdata[2]:.3f}<br>"
-                "総厚 = %{customdata[3]:.0f} mm<br>"
-                "ラミナ = %{customdata[4]:.0f}mm × %{customdata[5]:.0f}枚"
+                "d=%{customdata[0]:.0f}mm / p=%{customdata[1]:.0f}mm<br>"
+                "vf=%{customdata[2]:.3f} | 総厚=%{customdata[3]:.0f}mm<br>"
+                "ラミナ %{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚<br>"
+                "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
         ))
 
-    # 100°C 限界線（60分準耐火の一般的評価基準）
+    # ラミナ厚のシンボル凡例（ダミートレース）
+    for t in unique_t:
+        sym = _T_SYMBOLS.get(t, "circle")
+        icon = "●" if sym == "circle" else "■"
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode="markers",
+            marker=dict(color="gray", symbol=sym, size=9),
+            name=f"{icon} {int(t)}mm ラミナ（シンボル）",
+            showlegend=True,
+            legendgroup=f"t_{int(t)}",
+        ))
+
+    # 100°C 基準線
     if all_cands:
-        x_range = [min(c.R_value for c in all_cands), max(c.R_value for c in all_cands)]
+        r_min = min(c.R_value for c in all_cands)
+        r_max = max(c.R_value for c in all_cands)
         fig.add_shape(
-            type="line", x0=x_range[0], x1=x_range[1], y0=100, y1=100,
-            line=dict(color="orange", width=1.5, dash="dash"),
+            type="line", x0=r_min, x1=r_max, y0=100, y1=100,
+            line=dict(color="darkorange", width=1.5, dash="dash"),
         )
         fig.add_annotation(
-            x=x_range[1], y=100, text="100°C 限界（60分準耐火）",
+            x=r_max, y=100, text="100°C 基準（60分準耐火）",
             showarrow=False, xanchor="right", yanchor="bottom",
-            font=dict(color="orange", size=11),
+            font=dict(color="darkorange", size=11),
         )
 
     fig.update_layout(
         title="パレートフロント：断熱性能 vs 耐火性能",
         xaxis_title="断熱抵抗 R [m²·K/W]（大きいほど断熱性能↑）",
         yaxis_title="CLT面温度@60分 [°C]（小さいほど耐火性能↑）",
-        height=500,
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.7)"),
+        height=560,
+        legend=dict(
+            x=1.02, y=1.0,
+            bgcolor="rgba(255,255,255,0.85)",
+            bordercolor="lightgray", borderwidth=1,
+            font=dict(size=12),
+        ),
+        margin=dict(r=220),
     )
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "🎨 **色**: 孔径 d  |  **● 丸**: 12mmラミナ  |  **■ 四角**: 24mmラミナ  "
+        "|  **点の大きさ**: 総厚（大 = 厚い）  |  **★**: パレート最適解"
+    )
 
     # ─── パレート最適解テーブル ─────────────────────────────────────
-    if pareto_pts:
+    show_all_pareto = st.toggle("フィルタに関わらず全パレート解を表示", value=False)
+    display_pareto = pareto_pts if show_all_pareto else filtered_pareto
+
+    if display_pareto:
         st.subheader("✅ パレート最適解一覧")
         st.caption(
-            "★ = 他のどの候補よりも、断熱性能と耐火性能の両方で同時に劣らない設計。"
-            "上から順に耐火性能が高い（CLT面温度が低い）。"
+            "★ = 断熱性能・耐火性能の両方で他のどの候補にも劣らない設計。"
+            "CLT面温度の低い順（耐火性能の高い順）に並んでいます。"
         )
-
         rows = []
-        for c in sorted(pareto_pts, key=lambda x: x.T_clt_60):
+        for c in sorted(display_pareto, key=lambda x: x.T_clt_60):
             rows.append({
                 "孔径 d [mm]": int(c.d_mm),
                 "ピッチ p [mm]": int(c.p_mm),
@@ -292,19 +417,19 @@ def _render_pareto_results(state) -> None:
             })
         df_pareto = pd.DataFrame(rows)
         st.dataframe(df_pareto, hide_index=True, use_container_width=True)
-
-        # CSV ダウンロード
         st.download_button(
             "💾 パレート解 CSV をダウンロード",
             data=df_pareto.to_csv(index=False).encode("utf-8-sig"),
             file_name="pareto_front.csv",
             mime="text/csv",
         )
+    elif not show_all_pareto:
+        st.info("表示フィルタに一致するパレート最適解がありません。フィルタ条件を緩めてください。")
 
     # ─── 全候補テーブル ─────────────────────────────────────────────
-    with st.expander("📋 全候補一覧（エラーを除く）", expanded=False):
+    with st.expander("📋 全候補一覧（フィルタ適用中）", expanded=False):
         rows_all = []
-        for c in sorted(all_cands, key=lambda x: (x.T_clt_60, -x.R_value)):
+        for c in sorted(filtered_all, key=lambda x: (x.T_clt_60, -x.R_value)):
             rows_all.append({
                 "孔径 d [mm]": int(c.d_mm),
                 "ピッチ p [mm]": int(c.p_mm),
@@ -318,13 +443,12 @@ def _render_pareto_results(state) -> None:
             })
         if rows_all:
             st.dataframe(pd.DataFrame(rows_all), hide_index=True, use_container_width=True)
+        else:
+            st.info("フィルタ条件に一致する候補がありません。")
 
     # ─── エラー一覧 ──────────────────────────────────────────────────
     errors = [c for c in state.candidates if c.error]
     if errors:
         with st.expander(f"⚠️ エラー ({len(errors)} 件)", expanded=False):
             for c in errors[:10]:
-                st.text(
-                    f"d={c.d_mm}mm, p={c.p_mm}mm, "
-                    f"{c.t_lam_mm}mm×{c.n_lam}枚: {c.error}"
-                )
+                st.text(f"d={c.d_mm}mm, p={c.p_mm}mm, {c.t_lam_mm}mm×{c.n_lam}枚: {c.error}")
