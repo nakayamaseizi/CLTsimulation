@@ -58,10 +58,12 @@ class ParetoCandidate:
     p_mm: float
     t_lam_mm: float
     n_lam: int
+    t_face_mm: float = 0.0           # 表側（火側）無孔パネル厚 [mm]
+    face_mat: str = "sugi"           # 表側パネル材料（"sugi", "funen_ki" など）
 
     # 導出量（後から設定）
     vf: float = field(init=False)
-    total_mm: float = field(init=False)
+    total_mm: float = field(init=False)   # 有孔ラミナ層の総厚 [mm]
     T_clt_60: float = float("inf")   # 60分後CLT面温度 [°C]
     R_value: float = 0.0             # 断熱抵抗 [m²·K/W]
     is_pareto: bool = False
@@ -72,34 +74,34 @@ class ParetoCandidate:
         self.total_mm = self.t_lam_mm * self.n_lam
 
     @property
-    def r_key(self) -> tuple[float, float]:
-        """シミュレーション結果の共有キー（同じ vf・総厚は同じ結果）"""
-        return (round(self.vf, 4), float(self.total_mm))
+    def r_key(self) -> tuple:
+        """1Dシミュレーション結果の共有キー（vf・総厚・表面パネル厚・材料が同じなら同一結果）"""
+        return (round(self.vf, 4), float(self.total_mm), float(self.t_face_mm), self.face_mat)
 
     @property
     def protection_thickness_m(self) -> float:
+        """有孔ラミナ層の厚さ [m]"""
         return self.total_mm / 1000.0
 
     @property
+    def total_protection_mm(self) -> float:
+        """表面パネル + 有孔ラミナ層の合計厚 [mm]"""
+        return self.t_face_mm + self.total_mm
+
+    @property
     def k_eff_rt(self) -> float:
-        """室温換算有効熱伝導率 [W/m·K]"""
+        """有孔ラミナ層の室温換算有効熱伝導率 [W/m·K]"""
         return (1.0 - self.vf) * _WOOD_K_RT + self.vf * _AIR_K
 
     @property
     def r_analytical(self) -> float:
-        """室温換算解析断熱抵抗 [m²·K/W]"""
+        """室温換算解析断熱抵抗（表面パネル + 有孔層）[m²·K/W]"""
+        # 表面パネル（無孔）
+        r_face = (self.t_face_mm / 1000.0) / _WOOD_K_RT if self.t_face_mm > 0 else 0.0
+        # 有孔ラミナ層
         k = self.k_eff_rt
-        if k <= 0:
-            return 0.0
-        return (self.total_mm / 1000.0) / k
-
-    def use_ikehata_model(self) -> bool:
-        """池畑(2021)実験式の適用可否"""
-        return (
-            3.0 <= self.d_mm <= 18.0
-            and 6.0 <= self.t_lam_mm <= 30.0
-            and self.d_mm > 0
-        )
+        r_perf = (self.total_mm / 1000.0) / k if k > 0 else 0.0
+        return r_face + r_perf
 
 
 @dataclass
@@ -112,6 +114,7 @@ class ParetoOptState:
     pareto_front: list[ParetoCandidate] = field(default_factory=list)
     error_msg: str = ""
     elapsed_s: float = 0.0
+    solver_mode: str = "1D"  # "1D" | "3D"
 
     @property
     def progress(self) -> float:
@@ -157,6 +160,10 @@ def start_pareto_optimization(
     base_rho: float = 400.0,
     n_cells: int = 10,
     t_end_min: float = 60.0,
+    solver_mode: str = "1D",
+    n_cells_xy: int = 6,
+    t_face_list: list[float] | None = None,
+    face_mat: str = "sugi",
 ) -> None:
     """パレート最適化をバックグラウンドで開始する。
 
@@ -178,24 +185,35 @@ def start_pareto_optimization(
         1D FVM のセル数/層
     t_end_min : float
         加熱時間 [分]
+    solver_mode : str
+        "1D"（高速・池畑実験式）または "3D"（精密・燃え抜け考慮）
+    n_cells_xy : int
+        3Dモード用 YZ 方向のセル数（孔の形状精度に影響）
+    t_face_list : list[float] or None
+        表側（火側）無孔パネル厚の候補リスト [mm]。0 = 無し。None の場合は [0.0]。
     """
     global _state
+    if t_face_list is None:
+        t_face_list = [0.0]
 
     with _lock:
         if _state.status == "running":
             return
 
-        candidates = _generate_candidates(d_list, p_list, t_lam_list, n_lam_max)
+        candidates = _generate_candidates(
+            d_list, p_list, t_lam_list, n_lam_max, t_face_list, face_mat
+        )
         _stop_event.clear()
         _state = ParetoOptState(
             status="running",
             total=len(candidates),
             candidates=candidates,
+            solver_mode=solver_mode,
         )
 
     t = threading.Thread(
         target=_run_pareto_thread,
-        args=(candidates, base_mat, base_rho, n_cells, t_end_min),
+        args=(candidates, base_mat, base_rho, n_cells, t_end_min, solver_mode, n_cells_xy),
         daemon=True,
         name="pareto-opt-worker",
     )
@@ -218,43 +236,54 @@ def _generate_candidates(
     p_list: list[float],
     t_lam_list: list[float],
     n_lam_max: int,
+    t_face_list: list[float] | None = None,
+    face_mat: str = "sugi",
 ) -> list[ParetoCandidate]:
     """有効な全候補を生成する。
 
     Notes
     -----
     - d=0（無孔）の場合、ピッチに依らず同一結果になるため
-      各 (t_lam, n_lam) につき代表1点（p=p_list[0]）だけ生成する。
-    - 同じ (vf, total_mm) を与える複数の (d, p) 組み合わせは
+      各 (t_lam, n_lam, t_face) につき代表1点（p=p_list[0]）だけ生成する。
+    - 同じ (vf, total_mm, t_face_mm) を与える複数の (d, p) 組み合わせは
       シミュレーションキャッシュで重複除去するが、候補としてはそれぞれ残す
       （異なる物理設計として別の行に表示するため）。
+    - t_face_list: 表側（火側）無孔パネル厚候補 [mm]。0 = 無し。
     """
-    max_total_mm = 96.0
+    if t_face_list is None:
+        t_face_list = [0.0]
+
+    max_total_mm = 96.0  # 有孔ラミナ層の最大総厚（表面パネルは含まない）
     candidates: list[ParetoCandidate] = []
-    # d=0（無孔）は (t_lam, n_lam) ごとに1点だけ生成するための追跡
-    solid_keys_seen: set[tuple[float, int]] = set()
+    solid_keys_seen: set = set()
+    min_p = sorted(p_list)[0] if p_list else 30.0
 
-    for t_lam in sorted(t_lam_list):
-        n_max = min(n_lam_max, int(max_total_mm / t_lam))
-        for n_lam in range(1, n_max + 1):
-            # 無孔候補：1つだけ（最小ピッチで代表）
-            solid_key = (t_lam, n_lam)
-            if solid_key not in solid_keys_seen and 0.0 in d_list:
-                solid_keys_seen.add(solid_key)
-                candidates.append(ParetoCandidate(
-                    d_mm=0.0, p_mm=sorted(p_list)[0], t_lam_mm=t_lam, n_lam=n_lam
-                ))
+    for t_face in sorted(t_face_list):
+        for t_lam in sorted(t_lam_list):
+            n_max = min(n_lam_max, int(max_total_mm / t_lam))
+            for n_lam in range(1, n_max + 1):
+                # 無孔候補：(t_lam, n_lam, t_face) ごとに1点だけ
+                solid_key = (t_lam, n_lam, t_face)
+                if solid_key not in solid_keys_seen and 0.0 in d_list:
+                    solid_keys_seen.add(solid_key)
+                    candidates.append(ParetoCandidate(
+                        d_mm=0.0, p_mm=min_p, t_lam_mm=t_lam,
+                        n_lam=n_lam, t_face_mm=t_face, face_mat=face_mat,
+                    ))
 
-            for p in sorted(p_list):
-                for d in sorted(d_list):
-                    if d <= 0:
-                        continue  # d=0 は上で別途追加済み
-                    if d >= p:
-                        continue  # 孔が重なる（物理的に無効）
-                    if _compute_vf(d, p) > 0.79:
-                        continue  # 孔が接触する限界を超える
+                for p in sorted(p_list):
+                    for d in sorted(d_list):
+                        if d <= 0:
+                            continue
+                        if d >= p:
+                            continue
+                        if _compute_vf(d, p) > 0.79:
+                            continue
 
-                    candidates.append(ParetoCandidate(d_mm=d, p_mm=p, t_lam_mm=t_lam, n_lam=n_lam))
+                        candidates.append(ParetoCandidate(
+                            d_mm=d, p_mm=p, t_lam_mm=t_lam,
+                            n_lam=n_lam, t_face_mm=t_face, face_mat=face_mat,
+                        ))
 
     return candidates
 
@@ -269,20 +298,33 @@ def _run_pareto_thread(
     base_rho: float,
     n_cells: int,
     t_end_min: float,
+    solver_mode: str = "1D",
+    n_cells_xy: int = 6,
 ) -> None:
     """最適化のメインスレッド処理。"""
     wall_start = time.monotonic()
+    use_3d = solver_mode == "3D"
 
-    # (vf, total_mm) → シミュレーション結果のキャッシュ
-    sim_cache: dict[tuple[float, float], float] = {}
+    sim_cache: dict = {}
 
     for c in candidates:
         if _stop_event.is_set():
             break
         try:
-            key = c.r_key
+            # キャッシュキー（表面パネル材料も含む）
+            if use_3d:
+                key = (round(c.d_mm, 2), round(c.p_mm, 2),
+                       float(c.total_mm), float(c.t_face_mm), c.face_mat)
+            else:
+                key = c.r_key  # (vf_rounded, total_mm, t_face_mm, face_mat)
+
             if key not in sim_cache:
-                T_clt = _run_sim_one(c, base_mat, base_rho, n_cells, t_end_min)
+                if use_3d:
+                    T_clt = _run_sim_one_3d(
+                        c, base_mat, base_rho, n_cells_xy, n_cells, t_end_min
+                    )
+                else:
+                    T_clt = _run_sim_one(c, base_mat, base_rho, n_cells, t_end_min)
                 sim_cache[key] = T_clt
             c.T_clt_60 = sim_cache[key]
             c.R_value = c.r_analytical
@@ -312,23 +354,29 @@ def _run_sim_one(
     n_cells: int,
     t_end_min: float,
 ) -> float:
-    """1ケースのシミュレーションを実行し、60分後CLT面温度を返す。"""
+    """1ケースのシミュレーションを実行し、60分後CLT面温度を返す。
+
+    物性モデル: 常に池畑(2021)実験式（PerforatedWoodAdvanced）を使用。
+    d>18mm や t_lam>30mm は式内でクランプして外挿適用。
+    """
     from clt_fire_sim.materials import (
-        PerforatedWoodProperties,
         PerforatedWoodAdvanced,
         make_properties,
     )
     from clt_fire_sim.boundary import ISO834HeatedBC, ConvRadCoolingBC
     from clt_fire_sim.solver.fvm_1d import FVM1DSolver, MultiLayerProperties, make_multi_layer_mesh
 
-    protect_m = c.protection_thickness_m
+    protect_m = c.protection_thickness_m  # 有孔ラミナ層のみ [m]
+    face_m = c.t_face_mm / 1000.0         # 表面パネル [m]
     clt_layer_m = _CLT_LAYER_MM / 1000.0
 
-    thicknesses = [protect_m] + [clt_layer_m] * _CLT_N_LAYERS
-
-    # 保護層の物性値モデル選択
     base_props = make_properties(base_mat, base_rho, 0.12)
-    if c.vf > 0 and c.use_ikehata_model():
+    clt_props = make_properties("sugi", _CLT_RHO, 0.12)
+    # 表面パネル専用物性（材料が base_mat と異なる場合は個別生成）
+    face_props = make_properties(c.face_mat, base_rho, 0.12) if c.t_face_mm > 0 else None
+
+    # 有孔ラミナ層の物性値（常に池畑実験式）
+    if c.vf > 0:
         protect_props = PerforatedWoodAdvanced(
             base_props=base_props,
             void_fraction=c.vf,
@@ -336,16 +384,16 @@ def _run_sim_one(
             hole_depth_mm=c.t_lam_mm,
             layer_thickness_mm=c.t_lam_mm,
         )
-    elif c.vf > 0:
-        protect_props = PerforatedWoodProperties(
-            base_props=base_props,
-            void_fraction=c.vf,
-        )
     else:
-        protect_props = base_props
+        protect_props = base_props  # 無孔 → 素材そのまま
 
-    clt_props = make_properties("sugi", _CLT_RHO, 0.12)
-    props_list = [protect_props] + [clt_props] * _CLT_N_LAYERS
+    # レイヤー構成（表面パネルあり / なし）
+    if face_m > 0 and face_props is not None:
+        thicknesses = [face_m, protect_m] + [clt_layer_m] * _CLT_N_LAYERS
+        props_list = [face_props, protect_props] + [clt_props] * _CLT_N_LAYERS
+    else:
+        thicknesses = [protect_m] + [clt_layer_m] * _CLT_N_LAYERS
+        props_list = [protect_props] + [clt_props] * _CLT_N_LAYERS
 
     mesh = make_multi_layer_mesh(thicknesses, n_cells_per_layer=n_cells, ratio=1.05)
     props = MultiLayerProperties(thicknesses, props_list)
@@ -357,18 +405,114 @@ def _run_sim_one(
 
     result = solver.solve(
         t_end=int(t_end_min) * 60,
-        dt_base=10,
-        dt_min=2,
-        dt_max=30,
-        n_picard=2,
-        record_interval=60,
+        dt_base=10, dt_min=2, dt_max=30,
+        n_picard=2, record_interval=60,
     )
 
-    # CLT面温度（深さ = protect_m）を抽出
+    # CLT面温度（深さ = 表面パネル + 有孔ラミナ層）を抽出
     x_mm = mesh.x_centers * 1000.0
-    idx_depth = np.argmin(np.abs(x_mm - c.total_mm))
+    idx_depth = np.argmin(np.abs(x_mm - c.total_protection_mm))
     idx_t60 = np.argmin(np.abs(result["times"] / 60.0 - t_end_min))
     return float(result["temperatures"][idx_t60, idx_depth])
+
+
+def _run_sim_one_3d(
+    c: ParetoCandidate,
+    base_mat: str,
+    base_rho: float,
+    n_cells_xy: int,
+    n_cells_per_layer: int,
+    t_end_min: float,
+) -> float:
+    """3D FVMソルバー（燃え抜けON）で1ケースのシミュレーション。
+
+    ユニットセル（p_mm × p_mm × 全厚）を対象に、保護層に円孔を設け
+    burn_through=True で孔内部を ISO 834 曲線温度に固定する。
+    CLT面温度はユニットセルの YZ 断面平均値を返す。
+    """
+    from clt_fire_sim.solver.fvm_3d import (
+        FVM3DSolver, make_clt_mesh_3d, setup_multi_layer_props_3d,
+    )
+    from clt_fire_sim.materials import make_properties
+    from clt_fire_sim.boundary import ISO834HeatedBC, ConvRadCoolingBC
+
+    protect_m = c.protection_thickness_m  # 有孔ラミナ層 [m]
+    face_m = c.t_face_mm / 1000.0         # 表面パネル [m]
+    clt_layer_m = _CLT_LAYER_MM / 1000.0
+    p_m = c.p_mm / 1000.0
+
+    # レイヤー構成（表面パネルあり / なし）
+    if face_m > 0:
+        layer_thicknesses = [face_m, protect_m] + [clt_layer_m] * _CLT_N_LAYERS
+        n_face_x = n_cells_per_layer   # 表面パネルのxセル数
+        n_perf_x_start = n_cells_per_layer  # 有孔層開始インデックス
+    else:
+        layer_thicknesses = [protect_m] + [clt_layer_m] * _CLT_N_LAYERS
+        n_face_x = 0
+        n_perf_x_start = 0
+
+    # 3Dメッシュ生成（ユニットセル = p×p mm のYZ断面）
+    mesh = make_clt_mesh_3d(
+        layer_thicknesses=layer_thicknesses,
+        specimen_width=p_m,
+        specimen_height=p_m,
+        n_cells_per_layer=n_cells_per_layer,
+        mesh_ratio=1.05,
+        n_cells_y=n_cells_xy,
+        n_cells_z=n_cells_xy,
+    )
+
+    nx, ny, nz = mesh.nx, mesh.ny, mesh.nz
+
+    # void_mask 生成（有孔ラミナ層のみ、中央に円孔）
+    void_mask = None
+    if c.d_mm > 0.0:
+        void_mask = np.zeros((nx, ny, nz), dtype=bool)
+        r_sq = (c.d_mm / 2.0) ** 2
+        half_p = c.p_mm / 2.0
+        perf_start = n_perf_x_start
+        perf_end = perf_start + n_cells_per_layer
+        for j in range(ny):
+            y_c = (j + 0.5) / ny * c.p_mm
+            for k in range(nz):
+                z_c = (k + 0.5) / nz * c.p_mm
+                if (y_c - half_p) ** 2 + (z_c - half_p) ** 2 <= r_sq:
+                    void_mask[perf_start:perf_end, j, k] = True
+
+    # 物性値（孔は void_mask で表現。表面パネルは c.face_mat を使用）
+    base_props = make_properties(base_mat, base_rho, 0.12)
+    clt_props = make_properties("sugi", _CLT_RHO, 0.12)
+    if face_m > 0:
+        face_props = make_properties(c.face_mat, base_rho, 0.12)
+        layer_props = [face_props, base_props] + [clt_props] * _CLT_N_LAYERS
+    else:
+        layer_props = [base_props] + [clt_props] * _CLT_N_LAYERS
+    props = setup_multi_layer_props_3d(layer_thicknesses, layer_props, mesh)
+
+    bc_l = ISO834HeatedBC(alpha_c=25.0, eps_m=0.8, eps_f=1.0)
+    bc_r = ConvRadCoolingBC(alpha_c=9.0, eps_m=0.8, T_inf=20.0)
+    solver = FVM3DSolver(
+        mesh=mesh, props=props,
+        bc_left=bc_l, bc_right=bc_r,
+        T_init=20.0,
+        void_mask=void_mask,
+        burn_through=True,
+    )
+
+    result = solver.solve(
+        t_end=int(t_end_min) * 60,
+        dt_base=10, dt_min=2, dt_max=30,
+        n_picard=2, record_interval=60,
+    )
+
+    # 保護層全体直後（x = face + protect）の断面YZ平均温度を抽出
+    total_layers = len(layer_thicknesses)
+    n_protect_layers = (1 if face_m > 0 else 0) + 1  # 表面パネル+有孔層
+    idx_x = n_protect_layers * n_cells_per_layer  # CLT最初のセル
+    idx_x = min(idx_x, nx - 1)
+    idx_t = np.argmin(np.abs(result["times"] / 60.0 - t_end_min))
+    T_field = result["temperatures"][idx_t].reshape(nx, ny, nz)
+    return float(T_field[idx_x, :, :].mean())
 
 
 # ---------------------------------------------------------------------------

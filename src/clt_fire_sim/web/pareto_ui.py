@@ -32,6 +32,61 @@ def render_pareto_tab() -> None:
     )
 
     # ──────────────────────────────────────────────────────────────
+    # ソルバーモード選択
+    # ──────────────────────────────────────────────────────────────
+    # セッション状態のラベル変更対応（旧ラベルが残っていると Streamlit がエラーを出す）
+    _valid_modes = ["1D（高速・池畑式）", "3D（精密・燃え抜け考慮）"]
+    if st.session_state.get("pareto_solver_mode") not in _valid_modes:
+        st.session_state.pop("pareto_solver_mode", None)
+
+    solver_mode = st.radio(
+        "🧮 解析モード",
+        _valid_modes,
+        index=0,
+        key="pareto_solver_mode",
+        horizontal=True,
+    )
+    is_3d = solver_mode.startswith("3D")
+
+    if not is_3d:
+        st.info(
+            "**1Dモード**: 有孔板を池畑(2021)実験式の等価熱伝導率に置き換えて高速計算します。"
+            " 孔を通じた燃え抜けは考慮されないため、有孔板の耐火性能を**過大評価**する場合があります。"
+        )
+    else:
+        st.warning(
+            "**3Dモード**: ユニットセル（1ピッチ×1ピッチ）の有限体積法で"
+            " 孔内部を ISO 834 曲線温度に固定し、**燃え抜けを直接考慮**します。"
+            " 計算時間は 1D の約 10〜50 倍です。"
+        )
+
+    # 3D専用設定
+    n_cells_xy = 6
+    n_cells_x = 6
+    if is_3d:
+        with st.expander("🔧 3D メッシュ設定", expanded=True):
+            col_mxy, col_mx = st.columns(2)
+            with col_mxy:
+                n_cells_xy = st.slider(
+                    "YZ方向セル数 n_xy",
+                    min_value=4, max_value=16, value=6, step=2,
+                    key="pareto_n_cells_xy",
+                    help="孔径とピッチの比（d/p）が小さいほど大きな値が必要。大きいほど精度↑・速度↓。",
+                )
+            with col_mx:
+                n_cells_x = st.slider(
+                    "X方向セル数/層 n_x",
+                    min_value=4, max_value=12, value=6, step=2,
+                    key="pareto_n_cells_x",
+                    help="厚み方向の分割数。大きいほど精度↑・速度↓。",
+                )
+            total_cells_est = (1 + 3) * n_cells_x * n_cells_xy ** 2
+            st.caption(
+                f"ユニットセルの総格子数（目安）: "
+                f"4層 × {n_cells_x} × {n_cells_xy}² = **{total_cells_est:,} セル**"
+            )
+
+    # ──────────────────────────────────────────────────────────────
     # パラメータ設定 UI
     # ──────────────────────────────────────────────────────────────
     with st.expander("⚙️ 探索パラメータ設定", expanded=True):
@@ -73,7 +128,6 @@ def render_pareto_tab() -> None:
                 t_lam_list = [12.0]
 
             n_lam_max = st.slider("最大層数", 1, 8, 8, key="pareto_n_lam_max")
-            max_total = max(t * n_lam_max for t in t_lam_list)
             total_options = sorted(set(
                 t * n
                 for t in t_lam_list
@@ -82,18 +136,83 @@ def render_pareto_tab() -> None:
             ))
             st.caption(f"総厚の候補 [mm]: {[int(x) for x in total_options]}")
 
+        # ── 表面（火側）無孔パネル厚 ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("**🛡️ 火側表面パネル（無孔）**")
+        use_face = st.checkbox(
+            "表面無孔パネルを探索対象に含める",
+            value=False,
+            key="pareto_use_face",
+        )
+        if use_face:
+            face_col_t, face_col_m = st.columns([3, 2])
+            with face_col_t:
+                face_presets = [0, 9, 12, 15, 18, 24]
+                face_selected = st.multiselect(
+                    "表面パネル厚候補 [mm]（0 = なし）",
+                    face_presets,
+                    default=[0, 9, 12],
+                    key="pareto_face_list",
+                )
+                t_face_list = sorted(float(f) for f in face_selected) if face_selected else [0.0]
+            with face_col_m:
+                face_mat = st.selectbox(
+                    "表面パネル材料",
+                    options=["sugi", "hinoki", "lauan", "funen_ki"],
+                    format_func=lambda m: {
+                        "sugi": "スギ（通常木材）",
+                        "hinoki": "ヒノキ（通常木材）",
+                        "lauan": "ラワン（通常木材）",
+                        "funen_ki": "不燃木（炭化抑制モデル）",
+                    }.get(m, m),
+                    index=0,
+                    key="pareto_face_mat",
+                )
+            st.caption(
+                f"火側から: **[{face_mat} パネル {t_face_list} mm]** → 有孔ラミナ → CLT 3×30mm  "
+                "（t_face=0 は無孔パネルなしと同義）"
+            )
+        else:
+            t_face_list = [0.0]
+            face_mat = "sugi"
+            st.caption("表面パネルなしで計算します。")
+
         # 候補数と所要時間のプレビュー
         try:
-            preview_candidates = _generate_candidates(d_list, p_list, t_lam_list, n_lam_max)
-            unique_sims = len(set(c.r_key for c in preview_candidates))
-            est_sec = unique_sims * 1.5  # ~1.5秒/ケース（実測値）
-            est_min = est_sec / 60
-            time_str = f"{est_sec:.0f} 秒" if est_sec < 120 else f"約 {est_min:.1f} 分"
-            st.info(
-                f"設計変数の組み合わせ: **{len(preview_candidates)} 通り**  |  "
-                f"実際のシミュレーション回数: **{unique_sims} 回**（重複除去後）  |  "
-                f"推定所要時間: **{time_str}**"
+            preview_candidates = _generate_candidates(
+                d_list, p_list, t_lam_list, n_lam_max, t_face_list=t_face_list
             )
+            if is_3d:
+                unique_keys = set(
+                    (round(c.d_mm, 2), round(c.p_mm, 2),
+                     float(c.total_mm), float(c.t_face_mm))
+                    for c in preview_candidates
+                )
+                unique_sims = len(unique_keys)
+                # 3D速度推定: セル数に比例（基準: n_xy=6,n_x=6 → ~12秒/ケース）
+                sec_per_sim = max(5, n_cells_xy ** 2 * n_cells_x / 3)
+                mode_note = "3D（燃え抜けあり）"
+            else:
+                unique_sims = len(set(c.r_key for c in preview_candidates))
+                sec_per_sim = 1.5  # 1D実測値
+                mode_note = "1D（池畑(2021)式）"
+
+            est_sec = unique_sims * sec_per_sim
+            est_min = est_sec / 60
+            time_str = f"{est_sec:.0f} 秒" if est_sec < 120 else f"約 {est_min:.0f} 分"
+
+            color = "orange" if est_min > 30 else "normal"
+            st.info(
+                f"解析モード: **{mode_note}**  |  "
+                f"設計変数の組み合わせ: **{len(preview_candidates)} 通り**  |  "
+                f"シミュレーション回数: **{unique_sims} 回**（重複除去後）  |  "
+                f"推定所要時間: **{time_str}**（約 {sec_per_sim:.0f} 秒/ケース）"
+            )
+            if est_min > 60:
+                st.warning(
+                    "⚠️ 推定計算時間が60分を超えています。"
+                    " 3Dモードでは探索パラメータ（孔径・ピッチ・層数）を絞ることを推奨します。"
+                )
         except Exception:
             pass
 
@@ -133,8 +252,12 @@ def render_pareto_tab() -> None:
                 n_lam_max=n_lam_max,
                 base_mat=base_mat,
                 base_rho=base_rho,
-                n_cells=10,
+                n_cells=n_cells_x if is_3d else 10,
                 t_end_min=t_end_min,
+                solver_mode="3D" if is_3d else "1D",
+                n_cells_xy=n_cells_xy,
+                t_face_list=t_face_list,
+                face_mat=face_mat,
             )
             st.rerun()
     with col_stop:
@@ -194,8 +317,9 @@ def _render_pareto_results(state) -> None:
         st.warning("有効な候補がありません。")
         return
 
+    mode_label = "3D（燃え抜けあり）" if state.solver_mode == "3D" else "1D（池畑(2021)式）"
     st.success(
-        f"最適化完了: {len(all_cands)} 候補を評価 → "
+        f"最適化完了 [{mode_label}]: {len(all_cands)} 候補を評価 → "
         f"パレート最適解 **{len(pareto_pts)} 点** を特定"
     )
 
@@ -203,20 +327,21 @@ def _render_pareto_results(state) -> None:
     unique_d = sorted(set(c.d_mm for c in all_cands))
     unique_p = sorted(set(c.p_mm for c in all_cands))
     unique_t = sorted(set(c.t_lam_mm for c in all_cands))
+    unique_face = sorted(set(c.t_face_mm for c in all_cands))
+    has_face = len(unique_face) > 1 or (len(unique_face) == 1 and unique_face[0] > 0)
 
     # ─── 表示フィルタ チェックボックス ─────────────────────────────
     with st.expander("🔍 グラフ表示フィルタ", expanded=True):
-        col_fd, col_fp, col_ft = st.columns(3)
+        filter_cols = st.columns(4 if has_face else 3)
+        col_fd, col_fp, col_ft = filter_cols[0], filter_cols[1], filter_cols[2]
 
         with col_fd:
             st.markdown("**🔵 孔径 d [mm]**")
-            # 全選択 / 全解除
             all_d_on = st.checkbox("すべて選択", value=True, key="filter_d_all")
             st.divider()
             sel_d: dict[float, bool] = {}
             for d in unique_d:
                 label = f"d = {int(d)} mm" + ("  （無孔）" if d == 0 else "")
-                color = _D_COLORS.get(d, "#999")
                 sel_d[d] = st.checkbox(
                     label, value=all_d_on, key=f"filter_d_{int(d)}"
                 )
@@ -243,12 +368,25 @@ def _render_pareto_results(state) -> None:
                     f"{sym_icon}  {int(t)} mm ラミナ", value=all_t_on, key=f"filter_t_{int(t)}"
                 )
 
+        sel_face: dict[float, bool] = {}
+        if has_face:
+            col_ff = filter_cols[3]
+            with col_ff:
+                st.markdown("**🛡️ 表面パネル厚 [mm]**")
+                all_f_on = st.checkbox("すべて選択", value=True, key="filter_f_all")
+                st.divider()
+                for f in unique_face:
+                    label = f"なし（0mm）" if f == 0 else f"{int(f)} mm"
+                    sel_face[f] = st.checkbox(label, value=all_f_on, key=f"filter_f_{int(f)}")
+
     # フィルタ適用
     def _visible(c) -> bool:
+        face_ok = sel_face.get(c.t_face_mm, True) if sel_face else True
         return (
             sel_d.get(c.d_mm, True)
             and sel_p.get(c.p_mm, True)
             and sel_t.get(c.t_lam_mm, True)
+            and face_ok
         )
 
     filtered_all = [c for c in all_cands if _visible(c)]
@@ -304,12 +442,14 @@ def _render_pareto_results(state) -> None:
                 [c.total_mm for c in d_cands],
                 [c.t_lam_mm for c in d_cands],
                 [c.n_lam for c in d_cands],
+                [c.t_face_mm for c in d_cands],
             ]),
             hovertemplate=(
                 f"<b>{d_label}</b><br>"
                 "p=%{customdata[1]:.0f}mm | vf=%{customdata[2]:.3f}<br>"
-                "総厚=%{customdata[3]:.0f}mm "
+                "有孔ラミナ=%{customdata[3]:.0f}mm "
                 "(%{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚)<br>"
+                "表面パネル=%{customdata[6]:.0f}mm<br>"
                 "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
@@ -335,12 +475,14 @@ def _render_pareto_results(state) -> None:
                 [c.total_mm for c in fp_sorted],
                 [c.t_lam_mm for c in fp_sorted],
                 [c.n_lam for c in fp_sorted],
+                [c.t_face_mm for c in fp_sorted],
             ]),
             hovertemplate=(
                 "<b>★ パレート最適解</b><br>"
                 "d=%{customdata[0]:.0f}mm / p=%{customdata[1]:.0f}mm<br>"
-                "vf=%{customdata[2]:.3f} | 総厚=%{customdata[3]:.0f}mm<br>"
-                "ラミナ %{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚<br>"
+                "vf=%{customdata[2]:.3f} | 有孔ラミナ=%{customdata[3]:.0f}mm<br>"
+                "ラミナ %{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚 "
+                "| 表面パネル=%{customdata[6]:.0f}mm<br>"
                 "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
@@ -402,18 +544,29 @@ def _render_pareto_results(state) -> None:
             "★ = 断熱性能・耐火性能の両方で他のどの候補にも劣らない設計。"
             "CLT面温度の低い順（耐火性能の高い順）に並んでいます。"
         )
+        _face_mat_label = {
+            "sugi": "スギ", "hinoki": "ヒノキ", "lauan": "ラワン",
+            "funen_ki": "不燃木",
+        }
         rows = []
         for c in sorted(display_pareto, key=lambda x: x.T_clt_60):
+            model_label = "3D FVM（燃え抜けあり）" if state.solver_mode == "3D" else "1D + 池畑(2021)"
+            face_info = (
+                f"{_face_mat_label.get(c.face_mat, c.face_mat)} {int(c.t_face_mm)}mm"
+                if c.t_face_mm > 0 else "なし"
+            )
             rows.append({
+                "表面パネル": face_info,
                 "孔径 d [mm]": int(c.d_mm),
                 "ピッチ p [mm]": int(c.p_mm),
                 "空洞率 vf": f"{c.vf:.3f}",
                 "ラミナ厚 [mm]": int(c.t_lam_mm),
                 "枚数": int(c.n_lam),
-                "総厚 [mm]": int(c.total_mm),
+                "有孔層総厚 [mm]": int(c.total_mm),
+                "保護層合計 [mm]": int(c.total_protection_mm),
                 "CLT面温度@60分 [°C]": f"{c.T_clt_60:.1f}",
                 "断熱抵抗 R [m²K/W]": f"{c.R_value:.3f}",
-                "物性モデル": "池畑(2021)" if c.use_ikehata_model() else "並列混合則",
+                "解析モデル": model_label,
             })
         df_pareto = pd.DataFrame(rows)
         st.dataframe(df_pareto, hide_index=True, use_container_width=True)
@@ -430,13 +583,19 @@ def _render_pareto_results(state) -> None:
     with st.expander("📋 全候補一覧（フィルタ適用中）", expanded=False):
         rows_all = []
         for c in sorted(filtered_all, key=lambda x: (x.T_clt_60, -x.R_value)):
+            face_info_all = (
+                f"{_face_mat_label.get(c.face_mat, c.face_mat)} {int(c.t_face_mm)}mm"
+                if c.t_face_mm > 0 else "なし"
+            )
             rows_all.append({
+                "表面パネル": face_info_all,
                 "孔径 d [mm]": int(c.d_mm),
                 "ピッチ p [mm]": int(c.p_mm),
                 "空洞率 vf": f"{c.vf:.3f}",
                 "ラミナ厚 [mm]": int(c.t_lam_mm),
                 "枚数": int(c.n_lam),
-                "総厚 [mm]": int(c.total_mm),
+                "有孔層総厚 [mm]": int(c.total_mm),
+                "保護層合計 [mm]": int(c.total_protection_mm),
                 "CLT面温度@60分 [°C]": f"{c.T_clt_60:.1f}",
                 "断熱抵抗 R [m²K/W]": f"{c.R_value:.3f}",
                 "★パレート": "★" if c.is_pareto else "",

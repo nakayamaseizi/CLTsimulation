@@ -479,6 +479,22 @@ MATERIAL_DB: dict[str, dict] = {
         ),
     },
 
+    # ── 不燃木（炭化なし簡略モデル）─────────────────────────────────
+    "funen_ki": {
+        "name": "不燃木（不燃処理木材・炭化抑制モデル）",
+        "rho_0": 400.0,
+        "moisture_content": 0.12,
+        "standard": "簡略モデル（炭化なし仮定・高温 k 上昇なし）",
+        "properties_type": "funen_ki",
+        "notes": (
+            "火側表面パネル用の不燃処理木材モデル。\n"
+            "不燃処理により自消・炭化が抑制されるため、高温でも熱伝導率の急激な上昇なし。\n"
+            "k(T): Eurocode 5 木材と同じ低温挙動、350°C 以上は緩やかな上昇に留まる。\n"
+            "ρ・cp は未処理スギと同等（熱容量は変わらない）。\n"
+            "（注）純熱伝導モデルのため、不燃処理の吸熱反応は再現されない。"
+        ),
+    },
+
     # ── 難燃処理木材 ──────────────────────────────────────────────
     "fr_sugi": {
         "name": "不燃処理スギ（難燃薬剤注入 180 kg/m³）",
@@ -530,6 +546,45 @@ MATERIAL_DB: dict[str, dict] = {
         "properties_type": "constant",
     },
 }
+
+
+# 不燃木の熱伝導率テーブル
+# Eurocode 5 木材と同じ低温挙動、炭化による高温上昇なし（350°C 以上は緩やかな上昇のみ）
+_FUNEN_KI_K_TABLE: ThermalTable = [
+    (20,    0.12),
+    (200,   0.15),
+    (350,   0.07),   # Eurocode 木材と同じ低点（炭化が起きないのでそのまま維持）
+    (500,   0.08),   # 炭化なし：緩やかな上昇のみ
+    (800,   0.10),   # 炭化層の輻射なし
+    (1200,  0.13),   # 高温でも Eurocode 木材（1.50）と比べ大幅に低い
+]
+
+
+class FunenKiProperties(WoodProperties):
+    """不燃木（不燃処理木材）の物性値モデル。
+
+    通常の木材と同じ密度・比熱を持つが、不燃処理により炭化が抑制されるため
+    高温での熱伝導率上昇が大幅に小さい。
+
+    k(T): `_FUNEN_KI_K_TABLE` を使用（炭化域の急上昇なし）
+    ρ(T), cp(T): WoodProperties と同じ（Eurocode 5 木材モデル）
+    """
+
+    def __init__(
+        self,
+        rho_0: float = 400.0,
+        moisture_content: float = 0.12,
+        smooth_half_width: float = 2.5,
+    ) -> None:
+        super().__init__(
+            rho_0=rho_0,
+            moisture_content=moisture_content,
+            smooth_half_width=smooth_half_width,
+            k_scale=1.0,
+            k_char_factor=1.0,
+        )
+        # 炭化なし専用の k(T) テーブルに置き換え
+        self._k_table = smooth_table_jumps(_FUNEN_KI_K_TABLE, smooth_half_width)
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1067,16 @@ def make_properties(
     if props_type == "charred_cork":
         return CharredCorkProperties(
             rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
+        )
+
+    # 不燃木（炭化なし・高温 k 上昇抑制モデル）
+    if props_type == "funen_ki":
+        return FunenKiProperties(
+            rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
+            moisture_content=(
+                moisture_content if moisture_content is not None
+                else defaults["moisture_content"]
+            ),
         )
 
     # 木質系（Eurocode 5 温度依存モデル）
