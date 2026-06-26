@@ -73,13 +73,6 @@ class ParetoCandidate:
         self.vf = _compute_vf(self.d_mm, self.p_mm)
         self.total_mm = self.t_lam_mm * self.n_lam
 
-    def __getattr__(self, name: str):
-        """古いキャッシュ済みオブジェクトで新フィールドが欠落していても安全に動作させる。"""
-        _defaults: dict = {"t_face_mm": 0.0, "face_mat": "sugi"}
-        if name in _defaults:
-            return _defaults[name]
-        raise AttributeError(f"'ParetoCandidate' has no attribute '{name}'")
-
     @property
     def r_key(self) -> tuple:
         """1Dシミュレーション結果の共有キー（vf・総厚・表面パネル厚・材料が同じなら同一結果）"""
@@ -123,13 +116,6 @@ class ParetoOptState:
     elapsed_s: float = 0.0
     solver_mode: str = "1D"  # "1D" | "3D"
 
-    def __getattr__(self, name: str):
-        """古いキャッシュ済みオブジェクトで新フィールドが欠落していても安全に動作させる。"""
-        _defaults: dict = {"solver_mode": "1D", "error_msg": ""}
-        if name in _defaults:
-            return _defaults[name]
-        raise AttributeError(f"'ParetoOptState' has no attribute '{name}'")
-
     @property
     def progress(self) -> float:
         return self.done / max(self.total, 1)
@@ -152,11 +138,13 @@ _lock = threading.Lock()
 
 
 def get_pareto_state() -> ParetoOptState:
-    """現在の最適化状態を返す。古いオブジェクトが残っている場合はリセットする。"""
+    """現在の最適化状態を返す。旧デプロイ版で欠落したフィールドはパッチで補完する。"""
     global _state
-    # 旧デプロイ版で作成されたオブジェクトに必須フィールドが欠落していればリセット
+    # 旧バージョンのインスタンスに新フィールドが無い場合はパッチ（リセットしない）
     if not hasattr(_state, "solver_mode"):
-        _state = ParetoOptState()
+        _state.solver_mode = "1D"
+    if not hasattr(_state, "error_msg"):
+        _state.error_msg = ""
     return _state
 
 
