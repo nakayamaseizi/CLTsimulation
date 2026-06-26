@@ -152,7 +152,11 @@ _lock = threading.Lock()
 
 
 def get_pareto_state() -> ParetoOptState:
-    """現在の最適化状態を返す。"""
+    """現在の最適化状態を返す。古いオブジェクトが残っている場合はリセットする。"""
+    global _state
+    # 旧デプロイ版で作成されたオブジェクトに必須フィールドが欠落していればリセット
+    if not hasattr(_state, "solver_mode"):
+        _state = ParetoOptState()
     return _state
 
 

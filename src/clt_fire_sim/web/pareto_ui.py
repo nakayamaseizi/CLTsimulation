@@ -317,7 +317,7 @@ def _render_pareto_results(state) -> None:
         st.warning("有効な候補がありません。")
         return
 
-    mode_label = "3D（燃え抜けあり）" if state.solver_mode == "3D" else "1D（池畑(2021)式）"
+    mode_label = "3D（燃え抜けあり）" if getattr(state, "solver_mode", "1D") == "3D" else "1D（池畑(2021)式）"
     st.success(
         f"最適化完了 [{mode_label}]: {len(all_cands)} 候補を評価 → "
         f"パレート最適解 **{len(pareto_pts)} 点** を特定"
@@ -550,7 +550,7 @@ def _render_pareto_results(state) -> None:
         }
         rows = []
         for c in sorted(display_pareto, key=lambda x: x.T_clt_60):
-            model_label = "3D FVM（燃え抜けあり）" if state.solver_mode == "3D" else "1D + 池畑(2021)"
+            model_label = "3D FVM（燃え抜けあり）" if getattr(state, "solver_mode", "1D") == "3D" else "1D + 池畑(2021)"
             face_info = (
                 f"{_face_mat_label.get(c.face_mat, c.face_mat)} {int(c.t_face_mm)}mm"
                 if c.t_face_mm > 0 else "なし"
