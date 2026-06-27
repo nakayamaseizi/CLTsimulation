@@ -325,12 +325,12 @@ def make_surface_temp_chart(
     T_init: float = 20.0,
     insulation_limit: float = 100.0,
 ) -> Any:
-    """加熱面・非加熱面温度と ISO 834 ガス温度の時刻歴を Plotly で描画する。
+    """加熱面・構造層表面・非加熱面温度と ISO 834 ガス温度の時刻歴を Plotly で描画する。
 
     Parameters
     ----------
     result : dict
-        solve() の返り値。
+        solve() の返り値。config キーがあれば構造層表面温度も描画する。
     T_init : float
         初期温度 [°C]。
     insulation_limit : float
@@ -345,14 +345,48 @@ def make_surface_temp_chart(
 
     times_min = result["times"] / 60.0
     T_mat = result["temperatures"]
+    x_centers = result.get("x_centers")
+    mesh = result.get("mesh")
 
-    # 加熱面・非加熱面の温度を抽出
-    if T_mat.ndim == 2:
-        T_heated = T_mat[:, 0]
-        T_unheated = T_mat[:, -1]
+    # 3D か 1D かを判定（mesh に ny 属性があれば 3D）
+    is_3d = mesh is not None and hasattr(mesh, "ny")
+
+    if is_3d:
+        nx, ny, nz = mesh.nx, mesh.ny, mesh.nz
+        T_heated   = np.array([T_mat[ti].reshape(nx, ny, nz)[0,  :, :].mean() for ti in range(len(T_mat))])
+        T_unheated = np.array([T_mat[ti].reshape(nx, ny, nz)[-1, :, :].mean() for ti in range(len(T_mat))])
     else:
-        T_heated = T_mat[:, 0]
+        T_heated   = T_mat[:, 0]
         T_unheated = T_mat[:, -1]
+
+    # ── 構造層表面温度（config と x_centers があれば抽出）──────────────
+    T_struct: Any = None
+    struct_label = "構造層表面温度"
+    config = result.get("config")
+    if config is not None and x_centers is not None:
+        try:
+            spec = config.specimen
+            eval_cfg = config.evaluation
+            layer_idx = eval_cfg.structural_layer_index
+            n_layers = len(spec.layers)
+            if layer_idx < 0:
+                layer_idx = n_layers + layer_idx
+            layer_idx = int(np.clip(layer_idx, 0, n_layers - 1))
+            layer_starts_m = np.cumsum(
+                [0.0] + [la.thickness_mm / 1000.0 for la in spec.layers]
+            )
+            struct_x = layer_starts_m[layer_idx]
+            sci = int(np.argmin(np.abs(x_centers - struct_x)))
+            if is_3d:
+                T_struct = np.array([
+                    T_mat[ti].reshape(nx, ny, nz)[sci, :, :].mean()
+                    for ti in range(len(T_mat))
+                ])
+            else:
+                T_struct = T_mat[:, sci]
+            struct_label = f"構造層表面温度（第{layer_idx + 1}層 火側面）"
+        except Exception:
+            T_struct = None
 
     # ISO 834 ガス温度
     T_iso = np.array([iso834_temperature(t) for t in times_min])
@@ -377,28 +411,39 @@ def make_surface_temp_chart(
         hovertemplate="時刻: %{x:.1f}分<br>ISO 834: %{y:.0f}°C<extra></extra>",
     ))
 
-    # 加熱面温度
+    # ① 加熱面温度
     fig.add_trace(go.Scatter(
         x=times_min.tolist(),
         y=T_heated.tolist(),
         mode="lines",
         line=dict(color="firebrick", width=2.5),
-        name="加熱面温度（第 1 セル）",
+        name="① 加熱面温度",
         hovertemplate="時刻: %{x:.1f}分<br>加熱面: %{y:.0f}°C<extra></extra>",
     ))
 
-    # 非加熱面温度
+    # ② 構造層表面温度
+    if T_struct is not None:
+        fig.add_trace(go.Scatter(
+            x=times_min.tolist(),
+            y=np.asarray(T_struct).tolist(),
+            mode="lines",
+            line=dict(color="darkorange", width=2.5, dash="dot"),
+            name=f"② {struct_label}",
+            hovertemplate=f"時刻: %{{x:.1f}}分<br>{struct_label}: %{{y:.1f}}°C<extra></extra>",
+        ))
+
+    # ③ 非加熱面温度
     fig.add_trace(go.Scatter(
         x=times_min.tolist(),
         y=T_unheated.tolist(),
         mode="lines",
         line=dict(color="steelblue", width=2.5),
-        name="非加熱面温度（最終セル）",
+        name="③ 非加熱面温度",
         hovertemplate="時刻: %{x:.1f}分<br>非加熱面: %{y:.1f}°C<extra></extra>",
     ))
 
     fig.update_layout(
-        title="加熱面・非加熱面 温度時刻歴",
+        title="温度時刻歴（加熱面 / 構造層表面 / 非加熱面）",
         xaxis_title="時間 [分]",
         yaxis_title="温度 [°C]",
         xaxis=dict(range=[0, float(times_min.max())]),
@@ -507,4 +552,154 @@ def make_temp_heatmap(
         legend=dict(x=0.02, y=0.02),
     )
 
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 試験体断面図（層構成 + 温度計測点）
+# ---------------------------------------------------------------------------
+
+def make_specimen_diagram(config: Any) -> Any:
+    """試験体の層構成を横断面図で描画し、グラフの温度計測点を重ねて表示する。
+
+    Parameters
+    ----------
+    config : CLTConfig
+        シミュレーション設定オブジェクト。
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    import plotly.graph_objects as go
+    from clt_fire_sim.materials import MATERIAL_DB
+
+    spec = config.specimen
+    layers = spec.layers
+    n_layers = len(layers)
+
+    # 構造層インデックス（-1 → 最終層）
+    struct_idx = config.evaluation.structural_layer_index
+    if struct_idx < 0:
+        struct_idx = n_layers + struct_idx
+    struct_idx = int(np.clip(struct_idx, 0, n_layers - 1))
+
+    # 累積 x 座標（加熱面=0）
+    thicknesses = [la.thickness_mm for la in layers]
+    x_edges = [0.0] + list(np.cumsum(thicknesses))
+    total_mm = x_edges[-1]
+    pad = total_mm * 0.07  # 左右余白
+
+    # 材料→塗りつぶし色（キーワード順一致）
+    _MAT_COLORS: list[tuple[str, str]] = [
+        ("air",      "rgba(190,225,245,0.85)"),
+        ("noncomb",  "rgba(160,200,175,0.85)"),
+        ("gypsum",   "rgba(230,215,215,0.85)"),
+        ("steel",    "rgba(180,180,195,0.85)"),
+        ("sugi",     "rgba(222,196,158,0.85)"),
+        ("hinoki",   "rgba(215,188,145,0.85)"),
+        ("oak",      "rgba(195,165,120,0.85)"),
+        ("pine",     "rgba(218,192,150,0.85)"),
+        ("wood",     "rgba(210,182,140,0.85)"),
+        ("clt",      "rgba(200,174,130,0.85)"),
+    ]
+
+    def _color(mat: str) -> str:
+        ml = mat.lower()
+        for key, c in _MAT_COLORS:
+            if key in ml:
+                return c
+        return "rgba(200,200,200,0.85)"
+
+    fig = go.Figure()
+
+    # ── 各層の矩形（y: 0 → 1）──────────────────────────────────────────
+    for i, layer in enumerate(layers):
+        x0, x1 = x_edges[i], x_edges[i + 1]
+        is_struct = i == struct_idx
+        fig.add_shape(
+            type="rect", x0=x0, y0=0, x1=x1, y1=1,
+            fillcolor=_color(layer.material),
+            line=dict(color="darkorange" if is_struct else "#aaa",
+                      width=3.0 if is_struct else 1.0),
+        )
+        mat_disp = MATERIAL_DB.get(layer.material, {}).get("name", layer.material)
+        w = x1 - x0
+        # フォントサイズを幅比率で調整（最小 8pt）
+        fs = max(8, min(12, int(w / total_mm * n_layers * 13)))
+        x_mid = (x0 + x1) / 2
+        fig.add_annotation(
+            x=x_mid, y=0.5,
+            text=f"第{i+1}層<br>{mat_disp}<br>{w:.0f}mm",
+            showarrow=False, font=dict(size=fs), align="center",
+        )
+
+    # ── ① 加熱面温度（x=0）──────────────────────────────────────────────
+    fig.add_shape(type="line", x0=0, y0=0, x1=0, y1=1.38,
+                  line=dict(color="firebrick", width=2.5))
+    fig.add_annotation(
+        x=0, y=1.45, xanchor="center",
+        text="<b>① 加熱面温度</b>",
+        showarrow=False, font=dict(color="firebrick", size=12),
+    )
+
+    # ── ② 構造層表面温度（構造層の火側面）────────────────────────────────
+    x_struct = x_edges[struct_idx]
+    # ① と重なる場合（struct_idx=0）は下側に注釈を出す
+    if struct_idx == 0:
+        fig.add_shape(type="line", x0=x_struct, y0=-0.38, x1=x_struct, y1=1,
+                      line=dict(color="darkorange", width=2.5, dash="dot"))
+        fig.add_annotation(
+            x=x_struct, y=-0.45, xanchor="left",
+            text=f"<b>② 構造層表面温度（第{struct_idx+1}層 火側面）</b>",
+            showarrow=False, font=dict(color="darkorange", size=11),
+        )
+    else:
+        fig.add_shape(type="line", x0=x_struct, y0=-0.38, x1=x_struct, y1=1,
+                      line=dict(color="darkorange", width=2.5, dash="dot"))
+        fig.add_annotation(
+            x=x_struct, y=-0.45, xanchor="center",
+            text=f"<b>② 構造層表面温度（第{struct_idx+1}層 火側面）</b>",
+            showarrow=False, font=dict(color="darkorange", size=11),
+        )
+
+    # ── ③ 非加熱面温度（x=total_mm）─────────────────────────────────────
+    fig.add_shape(type="line", x0=total_mm, y0=0, x1=total_mm, y1=1.38,
+                  line=dict(color="steelblue", width=2.5))
+    fig.add_annotation(
+        x=total_mm, y=1.45, xanchor="center",
+        text="<b>③ 非加熱面温度</b>",
+        showarrow=False, font=dict(color="steelblue", size=12),
+    )
+
+    # 🔥 / ❄️
+    fig.add_annotation(x=-pad * 0.6, y=0.5, text="🔥", showarrow=False,
+                       font=dict(size=20), xanchor="center")
+    fig.add_annotation(x=total_mm + pad * 0.6, y=0.5, text="❄️", showarrow=False,
+                       font=dict(size=20), xanchor="center")
+
+    # 「構造層」吹き出し（矩形上部）
+    fig.add_annotation(
+        x=(x_edges[struct_idx] + x_edges[struct_idx + 1]) / 2,
+        y=1.03, xanchor="center", yanchor="bottom",
+        text=f"◀ 構造層（第{struct_idx+1}層）▶",
+        showarrow=False, font=dict(color="darkorange", size=11),
+    )
+
+    fig.update_layout(
+        title=dict(text=f"試験体断面図：{spec.name}　総厚 {total_mm:.0f} mm", font=dict(size=14)),
+        xaxis=dict(
+            title="加熱面からの距離 [mm]",
+            range=[-pad, total_mm + pad],
+            showgrid=True, gridcolor="#eee", zeroline=False,
+        ),
+        yaxis=dict(
+            range=[-0.75, 1.75],
+            showticklabels=False, showgrid=False, zeroline=False, fixedrange=True,
+        ),
+        height=340,
+        margin=dict(l=10, r=10, t=55, b=20),
+        showlegend=False,
+        plot_bgcolor="white",
+    )
     return fig

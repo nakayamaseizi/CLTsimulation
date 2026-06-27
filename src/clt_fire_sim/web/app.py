@@ -100,6 +100,14 @@ with tab_config:
     _n_layers = len(config.specimen.layers)
     _total_mm = sum(layer.thickness_mm for layer in config.specimen.layers)
 
+    # ── 試験体断面図 ────────────────────────────────────────────────────────
+    st.markdown("### 試験体断面図")
+    try:
+        _fig_diagram = viz_plotly.make_specimen_diagram(config)
+        st.plotly_chart(_fig_diagram, use_container_width=True)
+    except Exception as _diag_err:
+        st.warning(f"断面図の生成に失敗しました: {_diag_err}")
+
     col_left, col_right = st.columns(2)
 
     with col_left:
@@ -512,13 +520,42 @@ with tab_3d:
                 st.plotly_chart(fig_surf, width="stretch")
                 _t_surf = _result3d["times"] / 60.0
                 _T_mat = _result3d["temperatures"]
-                _T_h = _T_mat[:, 0]
-                _T_u = _T_mat[:, -1]
-                _df_surf = _pd.DataFrame({
-                    "時刻[分]": _t_surf,
-                    "加熱面温度[°C]": _T_h,
-                    "非加熱面温度[°C]": _T_u,
-                })
+                _mesh3d = _result3d.get("mesh")
+                _is_3d = _mesh3d is not None and hasattr(_mesh3d, "ny")
+                if _is_3d:
+                    _nx3, _ny3, _nz3 = _mesh3d.nx, _mesh3d.ny, _mesh3d.nz
+                    _T_h = _np.array([_T_mat[_ti].reshape(_nx3, _ny3, _nz3)[0, :, :].mean() for _ti in range(len(_T_mat))])
+                    _T_u = _np.array([_T_mat[_ti].reshape(_nx3, _ny3, _nz3)[-1, :, :].mean() for _ti in range(len(_T_mat))])
+                else:
+                    _T_h = _T_mat[:, 0]
+                    _T_u = _T_mat[:, -1]
+                # 構造層表面温度
+                _T_struct_csv = None
+                _struct_col = "構造層表面温度[°C]"
+                try:
+                    _x_c3 = _result3d.get("x_centers")
+                    _cfg3 = _result3d.get("config", config)
+                    if _x_c3 is not None and _cfg3 is not None:
+                        _spec3 = _cfg3.specimen
+                        _li3 = _cfg3.evaluation.structural_layer_index
+                        _nl3 = len(_spec3.layers)
+                        if _li3 < 0:
+                            _li3 = _nl3 + _li3
+                        _li3 = int(_np.clip(_li3, 0, _nl3 - 1))
+                        _ls3 = _np.cumsum([0.0] + [_la.thickness_mm / 1000.0 for _la in _spec3.layers])
+                        _sci3 = int(_np.argmin(_np.abs(_x_c3 - _ls3[_li3])))
+                        if _is_3d:
+                            _T_struct_csv = _np.array([_T_mat[_ti].reshape(_nx3, _ny3, _nz3)[_sci3, :, :].mean() for _ti in range(len(_T_mat))])
+                        else:
+                            _T_struct_csv = _T_mat[:, _sci3]
+                        _struct_col = f"構造層表面温度（第{_li3+1}層）[°C]"
+                except Exception:
+                    pass
+                _surf_dict: dict = {"時刻[分]": _t_surf, "加熱面温度[°C]": _T_h}
+                if _T_struct_csv is not None:
+                    _surf_dict[_struct_col] = _T_struct_csv
+                _surf_dict["非加熱面温度[°C]"] = _T_u
+                _df_surf = _pd.DataFrame(_surf_dict)
                 st.download_button(
                     "📥 表面温度 CSV",
                     data=_df_surf.to_csv(index=False).encode("utf-8-sig"),
