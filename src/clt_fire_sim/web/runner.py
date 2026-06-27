@@ -290,14 +290,12 @@ def _run_simulation_thread(
             )
             _log(f"3Dメッシュ完了: {mesh.nx}×{mesh.ny}×{mesh.nz}={mesh.nx*mesh.ny*mesh.nz}セル")
 
-            # 3D 用 MultiLayerProperties は x_centers（1D 等価）で setup
-            mesh_1d = make_multi_layer_mesh(
-                layer_thicknesses=layer_thicknesses_m,
-                n_cells_per_layer=sim.n_cells_per_layer,
-                ratio=sim.mesh_ratio,
-            )
+            # 3D 用 props: セルインデックスは (i*ny*nz + j*nz + k) なので
+            # x 座標を ny*nz 回繰り返した配列で setup する
             props = MultiLayerProperties(layer_thicknesses_m, layer_props, contact_resistances)
-            props.setup(mesh_1d.x_centers)
+            x_all_3d = np.repeat(mesh.x_centers, mesh.ny * mesh.nz)
+            props.setup(x_all_3d)
+            _log(f"3D物性値setup完了: {len(x_all_3d)}セル")
 
             solver = FVM3DSolver(mesh, props, bc_left, bc_right, T_init=T_init)
 
@@ -344,17 +342,23 @@ def _run_simulation_thread(
             frac = current_t / t_total_s if t_total_s > 0 else 0.0
             est_remaining = (elapsed / frac - elapsed) if frac > 1e-6 else 0.0
             T_flat = T.ravel()
+            # 炭化深さ計算：3Dの場合はx方向の平均温度で近似
+            if mode == "3D":
+                T_x = T_flat.reshape(mesh.nx, mesh.ny * mesh.nz).mean(axis=1)
+                char_mm = _extract_char_depth_1d(mesh.x_centers, T_x)
+            else:
+                char_mm = _extract_char_depth_mm(mesh, T_flat)
             ts = time.strftime("%H:%M:%S")
             log_line = (f"{ts}  INFO   solver — "
                         f"t={current_t/60:.1f}分 "
                         f"T_max={float(T_flat.max()):.0f}°C "
-                        f"char={_extract_char_depth_mm(mesh, T_flat if mode=='1D' else T_flat):.1f}mm "
+                        f"char={char_mm:.1f}mm "
                         f"elapsed={elapsed:.1f}s")
             with _lock:
                 _sim_state.progress = min(frac, 1.0)
                 _sim_state.current_time_min = current_t / 60.0
                 _sim_state.max_temp_C = float(T_flat.max())
-                _sim_state.char_depth_mm = _extract_char_depth_mm(mesh, T_flat)
+                _sim_state.char_depth_mm = char_mm
                 _sim_state.elapsed_s = elapsed
                 _sim_state.est_remaining_s = max(0.0, est_remaining)
                 _sim_state.logs.append(log_line)
@@ -429,16 +433,18 @@ def _run_simulation_thread(
         traceback.print_exc()
 
 
-def _extract_char_depth_mm(mesh: Any, T: Any) -> float:
-    """現在の温度プロファイルから炭化深さ [mm] を計算する。"""
+def _extract_char_depth_1d(x_centers: Any, T: Any) -> float:
+    """x_centers と 1D 温度配列から炭化深さ [mm] を返す。"""
     import numpy as np
-
-    x = mesh.x_centers
-    # 300°C を超えているセルの最大位置
     charred = T >= 300.0
     if not np.any(charred):
         return 0.0
-    return float(x[charred].max()) * 1000.0
+    return float(x_centers[charred].max()) * 1000.0
+
+
+def _extract_char_depth_mm(mesh: Any, T: Any) -> float:
+    """現在の温度プロファイル（1D メッシュ）から炭化深さ [mm] を計算する。"""
+    return _extract_char_depth_1d(mesh.x_centers, T)
 
 
 # _make_layer_props は clt_fire_sim.runner._build_layer_properties に統合済み
