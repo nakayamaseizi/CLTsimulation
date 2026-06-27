@@ -533,6 +533,27 @@ def _render_pareto_results(state) -> None:
         "🎨 **色**: 孔径 d  |  **● 丸**: 12mmラミナ  |  **■ 四角**: 24mmラミナ  "
         "|  **点の大きさ**: 総厚（大 = 厚い）  |  **★**: パレート最適解"
     )
+    # 散布図データ CSV
+    _scatter_rows = []
+    for _c in all_cands:
+        _scatter_rows.append({
+            "孔径d[mm]": _c.d_mm,
+            "ピッチp[mm]": _c.p_mm,
+            "空洞率vf": round(_c.vf, 4),
+            "ラミナ厚[mm]": _c.t_lam_mm,
+            "枚数": _c.n_lam,
+            "有孔層総厚[mm]": _c.total_mm,
+            "表面パネル厚[mm]": _c.t_face_mm,
+            "CLT面温度@60分[°C]": round(_c.T_clt_60, 2),
+            "断熱抵抗R[m²K/W]": round(_c.R_value, 4),
+            "パレート最適": "★" if _c.is_pareto else "",
+        })
+    st.download_button(
+        "📥 散布図データ CSV（全候補）",
+        data=pd.DataFrame(_scatter_rows).to_csv(index=False).encode("utf-8-sig"),
+        file_name="pareto_scatter.csv",
+        mime="text/csv",
+    )
 
     # ─── パレート最適解テーブル ─────────────────────────────────────
     show_all_pareto = st.toggle("フィルタに関わらず全パレート解を表示", value=False)
@@ -601,7 +622,14 @@ def _render_pareto_results(state) -> None:
                 "★パレート": "★" if c.is_pareto else "",
             })
         if rows_all:
-            st.dataframe(pd.DataFrame(rows_all), hide_index=True, use_container_width=True)
+            df_all = pd.DataFrame(rows_all)
+            st.dataframe(df_all, hide_index=True, use_container_width=True)
+            st.download_button(
+                "📥 全候補 CSV",
+                data=df_all.to_csv(index=False).encode("utf-8-sig"),
+                file_name="all_candidates.csv",
+                mime="text/csv",
+            )
         else:
             st.info("フィルタ条件に一致する候補がありません。")
 

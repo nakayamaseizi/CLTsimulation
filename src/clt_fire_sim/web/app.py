@@ -428,17 +428,45 @@ with tab_3d:
 
         with vtab_char:
             try:
+                import numpy as _np
+                import pandas as _pd
                 fig_char = viz_plotly.make_charring_chart(_result3d)
                 st.plotly_chart(fig_char, width="stretch")
+                _t_char = _result3d["times"] / 60.0
+                _char_mm = _result3d["char_depths"] * 1000.0
+                _df_char = _pd.DataFrame({"時刻[分]": _t_char, "炭化深さ[mm]": _char_mm})
+                st.download_button(
+                    "📥 炭化深さ CSV",
+                    data=_df_char.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="charring.csv",
+                    mime="text/csv",
+                )
             except Exception as _e:
                 st.error(f"炭化深さグラフの生成に失敗しました: {_e}")
 
         with vtab_surf:
             try:
+                import numpy as _np
+                import pandas as _pd
                 fig_surf = viz_plotly.make_surface_temp_chart(
                     _result3d, T_init=_T_init3d
                 )
                 st.plotly_chart(fig_surf, width="stretch")
+                _t_surf = _result3d["times"] / 60.0
+                _T_mat = _result3d["temperatures"]
+                _T_h = _T_mat[:, 0]
+                _T_u = _T_mat[:, -1]
+                _df_surf = _pd.DataFrame({
+                    "時刻[分]": _t_surf,
+                    "加熱面温度[°C]": _T_h,
+                    "非加熱面温度[°C]": _T_u,
+                })
+                st.download_button(
+                    "📥 表面温度 CSV",
+                    data=_df_surf.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="surface_temp.csv",
+                    mime="text/csv",
+                )
             except Exception as _e:
                 st.error(f"表面温度グラフの生成に失敗しました: {_e}")
 

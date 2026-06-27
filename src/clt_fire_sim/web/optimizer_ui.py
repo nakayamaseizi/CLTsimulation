@@ -272,9 +272,12 @@ def _render_results(opt_state: Any, config: Any) -> None:
 
     # ── 炭化深さ時刻歴の比較グラフ ────────────────────────────────
     if baseline and baseline.result and best.result:
+        import pandas as pd
+
         st.markdown("---")
         st.markdown("### 📈 炭化深さ比較（ベースライン vs 最良）")
         fig = go.Figure()
+        _char_csv: dict = {}
 
         for pr, color, dash, label in [
             (baseline, "royalblue", "solid",   "ベースライン（孔なし）"),
@@ -283,6 +286,9 @@ def _render_results(opt_state: Any, config: Any) -> None:
             if pr.result:
                 t_min = pr.result["times"] / 60.0
                 char_mm = pr.result["char_depths"] * 1000.0
+                if "時刻[分]" not in _char_csv:
+                    _char_csv["時刻[分]"] = t_min.tolist()
+                _char_csv[label + " 炭化深さ[mm]"] = char_mm.tolist()
                 fig.add_trace(go.Scatter(
                     x=t_min.tolist(), y=char_mm.tolist(),
                     mode="lines",
@@ -299,14 +305,21 @@ def _render_results(opt_state: Any, config: Any) -> None:
             legend=dict(x=0.02, y=0.98),
         )
         st.plotly_chart(fig)
+        st.download_button(
+            "📥 炭化深さ CSV",
+            data=pd.DataFrame(_char_csv).to_csv(index=False).encode("utf-8-sig"),
+            file_name="charring_comparison.csv",
+            mime="text/csv",
+        )
 
         # 非加熱面温度の比較
         st.markdown("### 🌡️ 非加熱面温度比較")
         fig2 = go.Figure()
+        _temp_csv: dict = {}
 
         fig2.add_hline(
-            y=160, line_dash="dot", line_color="blue",
-            annotation_text="遮熱基準 160°C",
+            y=100, line_dash="dot", line_color="blue",
+            annotation_text="100°C",
             annotation_position="bottom right",
         )
 
@@ -327,6 +340,10 @@ def _render_results(opt_state: Any, config: Any) -> None:
                 else:
                     T_unheated = T_mat[:, -1]
 
+                if "時刻[分]" not in _temp_csv:
+                    _temp_csv["時刻[分]"] = t_min.tolist()
+                _temp_csv[label + " 非加熱面[°C]"] = T_unheated.tolist()
+
                 fig2.add_trace(go.Scatter(
                     x=t_min.tolist(), y=T_unheated.tolist(),
                     mode="lines", name=label,
@@ -342,6 +359,12 @@ def _render_results(opt_state: Any, config: Any) -> None:
             legend=dict(x=0.02, y=0.98),
         )
         st.plotly_chart(fig2)
+        st.download_button(
+            "📥 非加熱面温度 CSV",
+            data=pd.DataFrame(_temp_csv).to_csv(index=False).encode("utf-8-sig"),
+            file_name="unheated_temp_comparison.csv",
+            mime="text/csv",
+        )
 
     # ── ビューアに送るボタン ─────────────────────────────────────
     if best.result:

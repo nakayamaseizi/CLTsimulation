@@ -323,7 +323,7 @@ def make_charring_chart(
 def make_surface_temp_chart(
     result: dict[str, Any],
     T_init: float = 20.0,
-    insulation_limit: float = 160.0,
+    insulation_limit: float = 100.0,
 ) -> Any:
     """加熱面・非加熱面温度と ISO 834 ガス温度の時刻歴を Plotly で描画する。
 
@@ -332,9 +332,9 @@ def make_surface_temp_chart(
     result : dict
         solve() の返り値。
     T_init : float
-        初期温度 [°C]（遮熱基準の参照値）。
+        初期温度 [°C]。
     insulation_limit : float
-        遮熱基準の絶対温度 [°C]。デフォルト 160°C。
+        基準温度 [°C]。デフォルト 100°C。
 
     Returns
     -------
@@ -359,12 +359,11 @@ def make_surface_temp_chart(
 
     fig = go.Figure()
 
-    # 遮熱基準線（絶対上限 160°C）
     fig.add_hline(
         y=insulation_limit,
         line_dash="dot",
         line_color="blue",
-        annotation_text=f"遮熱基準 {insulation_limit:.0f}°C",
+        annotation_text=f"{insulation_limit:.0f}°C",
         annotation_position="bottom right",
     )
 
