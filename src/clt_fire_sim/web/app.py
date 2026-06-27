@@ -191,11 +191,12 @@ with tab_run:
         pass
 
     # ── 解析設定サマリー ─────────────────────────────────────────────
+    _cur_mode = st.session_state.get("analysis_mode", "1D")
     st.markdown(
         f"**{config.specimen.name}** | "
         f"{_n_layers} 層 {_total_mm:.0f}mm | "
         f"{config.simulation.t_end_min:.0f} 分解析 | "
-        f"1D モード"
+        f"**{_cur_mode} モード**"
     )
 
     # ── 解析開始 / 中断ボタン ─────────────────────────────────────────
@@ -207,7 +208,20 @@ with tab_run:
             disabled=(state.status == "running"),
         ):
             outputs_base = Path("outputs")
-            web_runner.start_simulation(config, outputs_base=outputs_base)
+            _mode = st.session_state.get("analysis_mode", "1D")
+            _w_mm = float(st.session_state.get("specimen_width_mm", 300.0))
+            _h_mm = float(st.session_state.get("specimen_height_mm", 300.0))
+            _ny = int(st.session_state.get("n_cells_y", 4))
+            _nz = int(st.session_state.get("n_cells_z", 4))
+            web_runner.start_simulation(
+                config,
+                outputs_base=outputs_base,
+                mode=_mode,
+                specimen_width_mm=_w_mm,
+                specimen_height_mm=_h_mm,
+                n_cells_y=_ny,
+                n_cells_z=_nz,
+            )
             st.rerun()
 
     if state.status == "running":
@@ -240,17 +254,43 @@ with tab_run:
         except Exception:
             pass
 
-        # 自動リフレッシュ（0.5 秒ごとにポーリング）
+        # ターミナル風ログ
+        _logs_now = list(state.logs)
+        if _logs_now:
+            log_text = "\n".join(_logs_now[-200:])
+            st.markdown(
+                f'<div style="background:#0d1117;color:#58d68d;font-family:\'Courier New\',monospace;'
+                f'font-size:12px;padding:12px 16px;border-radius:6px;height:260px;overflow-y:auto;'
+                f'white-space:pre;line-height:1.5;">{log_text}</div>',
+                unsafe_allow_html=True,
+            )
+
         import time
         time.sleep(0.5)
         st.rerun()
 
     elif state.status == "done":
-        st.success(f"✅ 解析完了！  計算時間: {state.elapsed_s:.1f} 秒")
+        st.success(f"✅ 解析完了！  計算時間: {state.elapsed_s:.1f} 秒  モード: {state.mode}")
         st.info("「📊 結果」タブで結果を確認してください。")
+        if state.logs:
+            with st.expander("🖥️ 計算ログ", expanded=False):
+                st.markdown(
+                    f'<div style="background:#0d1117;color:#58d68d;font-family:\'Courier New\',monospace;'
+                    f'font-size:12px;padding:12px 16px;border-radius:6px;max-height:300px;overflow-y:auto;'
+                    f'white-space:pre;line-height:1.5;">' + "\n".join(state.logs) + "</div>",
+                    unsafe_allow_html=True,
+                )
 
     elif state.status == "stopped":
         st.warning(f"⏹️ 解析を中断しました。（{state.current_time_min:.1f} 分時点）")
+        if state.logs:
+            with st.expander("🖥️ 計算ログ", expanded=False):
+                st.markdown(
+                    f'<div style="background:#0d1117;color:#58d68d;font-family:\'Courier New\',monospace;'
+                    f'font-size:12px;padding:12px 16px;border-radius:6px;max-height:300px;overflow-y:auto;'
+                    f'white-space:pre;line-height:1.5;">' + "\n".join(state.logs) + "</div>",
+                    unsafe_allow_html=True,
+                )
 
     elif state.status == "error":
         st.error(f"❌ エラーが発生しました:\n\n{state.error_msg}")
@@ -259,6 +299,14 @@ with tab_run:
             "- メモリ不足 → メッシュを「粗い」にする\n"
             "- 数値発散 → `dt_base` を小さくする（YAML で調整）\n"
         )
+        if state.logs:
+            with st.expander("🖥️ 計算ログ（エラー詳細）", expanded=True):
+                st.markdown(
+                    f'<div style="background:#0d1117;color:#e74c3c;font-family:\'Courier New\',monospace;'
+                    f'font-size:12px;padding:12px 16px;border-radius:6px;max-height:300px;overflow-y:auto;'
+                    f'white-space:pre;line-height:1.5;">' + "\n".join(state.logs) + "</div>",
+                    unsafe_allow_html=True,
+                )
 
     if state.status in ("done", "stopped", "error"):
         if st.button("🔄 リセット（新しい解析を始める）", use_container_width=True):
