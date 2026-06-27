@@ -276,10 +276,10 @@ def _run_simulation_thread(
 
         if mode == "3D":
             # ---- 3D メッシュ ----
-            from clt_fire_sim.solver.fvm_3d import FVM3DSolver, make_3d_mesh
+            from clt_fire_sim.solver.fvm_3d import FVM3DSolver, make_clt_mesh_3d
             _log(f"3Dメッシュ構築: 幅={specimen_width_mm:.0f}mm 高さ={specimen_height_mm:.0f}mm "
                  f"ny={n_cells_y} nz={n_cells_z}")
-            mesh = make_3d_mesh(
+            mesh = make_clt_mesh_3d(
                 layer_thicknesses=layer_thicknesses_m,
                 specimen_width=specimen_width_mm / 1000.0,
                 specimen_height=specimen_height_mm / 1000.0,
