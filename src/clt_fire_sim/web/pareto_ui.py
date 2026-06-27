@@ -443,13 +443,16 @@ def _render_pareto_results(state) -> None:
                 [c.t_lam_mm for c in d_cands],
                 [c.n_lam for c in d_cands],
                 [c.t_face_mm for c in d_cands],
+                [c.lambda_eff for c in d_cands],
+                [c.U_value for c in d_cands],
             ]),
             hovertemplate=(
                 f"<b>{d_label}</b><br>"
-                "p=%{customdata[1]:.0f}mm | vf=%{customdata[2]:.3f}<br>"
+                "p=%{customdata[1]:.0f}mm | 空洞率 vf=%{customdata[2]:.3f}<br>"
                 "有孔ラミナ=%{customdata[3]:.0f}mm "
                 "(%{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚)<br>"
                 "表面パネル=%{customdata[6]:.0f}mm<br>"
+                "λ_eff=%{customdata[7]:.4f} W/mK | U=%{customdata[8]:.3f} W/m²K<br>"
                 "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
@@ -476,13 +479,16 @@ def _render_pareto_results(state) -> None:
                 [c.t_lam_mm for c in fp_sorted],
                 [c.n_lam for c in fp_sorted],
                 [c.t_face_mm for c in fp_sorted],
+                [c.lambda_eff for c in fp_sorted],
+                [c.U_value for c in fp_sorted],
             ]),
             hovertemplate=(
                 "<b>★ パレート最適解</b><br>"
                 "d=%{customdata[0]:.0f}mm / p=%{customdata[1]:.0f}mm<br>"
-                "vf=%{customdata[2]:.3f} | 有孔ラミナ=%{customdata[3]:.0f}mm<br>"
+                "空洞率 vf=%{customdata[2]:.3f} | 有孔ラミナ=%{customdata[3]:.0f}mm<br>"
                 "ラミナ %{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚 "
                 "| 表面パネル=%{customdata[6]:.0f}mm<br>"
+                "λ_eff=%{customdata[7]:.4f} W/mK | U=%{customdata[8]:.3f} W/m²K<br>"
                 "R=%{x:.3f} m²K/W | CLT面温度=%{y:.1f}°C"
                 "<extra></extra>"
             ),
@@ -545,7 +551,9 @@ def _render_pareto_results(state) -> None:
             "有孔層総厚[mm]": _c.total_mm,
             "表面パネル厚[mm]": _c.t_face_mm,
             "CLT面温度@60分[°C]": round(_c.T_clt_60, 2),
+            "λ_eff[W/mK]": round(_c.lambda_eff, 4),
             "断熱抵抗R[m²K/W]": round(_c.R_value, 4),
+            "熱貫流率U[W/m²K]": round(_c.U_value, 4),
             "パレート最適": "★" if _c.is_pareto else "",
         })
     st.download_button(
@@ -586,7 +594,9 @@ def _render_pareto_results(state) -> None:
                 "有孔層総厚 [mm]": int(c.total_mm),
                 "保護層合計 [mm]": int(c.total_protection_mm),
                 "CLT面温度@60分 [°C]": f"{c.T_clt_60:.1f}",
+                "λ_eff [W/mK]": f"{c.lambda_eff:.4f}",
                 "断熱抵抗 R [m²K/W]": f"{c.R_value:.3f}",
+                "熱貫流率 U [W/m²K]": f"{c.U_value:.3f}",
                 "解析モデル": model_label,
             })
         df_pareto = pd.DataFrame(rows)
@@ -618,7 +628,9 @@ def _render_pareto_results(state) -> None:
                 "有孔層総厚 [mm]": int(c.total_mm),
                 "保護層合計 [mm]": int(c.total_protection_mm),
                 "CLT面温度@60分 [°C]": f"{c.T_clt_60:.1f}",
+                "λ_eff [W/mK]": f"{c.lambda_eff:.4f}",
                 "断熱抵抗 R [m²K/W]": f"{c.R_value:.3f}",
+                "熱貫流率 U [W/m²K]": f"{c.U_value:.3f}",
                 "★パレート": "★" if c.is_pareto else "",
             })
         if rows_all:

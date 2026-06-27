@@ -45,6 +45,8 @@ _WOOD_K_RT: float = 0.12  # Eurocode 5 スギ 室温熱伝導率 [W/m·K]
 _CLT_LAYER_MM: float = 30.0   # CLT 各層厚さ [mm]
 _CLT_N_LAYERS: int = 3        # CLT 層数（3層90mm スギ 標準）
 _CLT_RHO: float = 410.0       # CLT スギ密度 [kg/m³]
+_RSI: float = 0.13  # 室内側表面熱抵抗 [m²K/W]（ISO 6946 / JIS A 2102 水平熱流）
+_RSE: float = 0.04  # 加熱面側表面熱抵抗 [m²K/W]
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,21 @@ class ParetoCandidate:
         k = self.k_eff_rt
         r_perf = (self.total_mm / 1000.0) / k if k > 0 else 0.0
         return r_face + r_perf
+
+    @property
+    def lambda_eff(self) -> float:
+        """有孔ラミナ層の室温等価熱伝導率 λ_eff [W/m·K]（並列混合則）"""
+        return self.k_eff_rt
+
+    @property
+    def U_value(self) -> float:
+        """全体熱貫流率 U [W/(m²·K)]（室温・稳常状態）
+
+        構成: Rse(0.04) | 表面パネル | 有孔ラミナ | CLT 3×30mm | Rsi(0.13)
+        """
+        r_clt = (_CLT_N_LAYERS * _CLT_LAYER_MM / 1000.0) / _WOOD_K_RT
+        r_total = _RSE + self.r_analytical + r_clt + _RSI
+        return 1.0 / r_total if r_total > 0 else 0.0
 
 
 @dataclass

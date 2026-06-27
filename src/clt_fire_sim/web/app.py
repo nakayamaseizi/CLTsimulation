@@ -293,6 +293,63 @@ with tab_result:
         )
         col_ref.metric("Eurocode 5 目標", "0.65 mm/min")
 
+        # ── 断熱性能（室温・稳常状態）────────────────────────────────────
+        st.markdown("### 🌡️ 断熱性能（室温・稳常状態）")
+        _cfg = result.get("config", config)
+        if _cfg is not None and hasattr(_cfg, "specimen"):
+            try:
+                import pandas as _pd_th
+                from clt_fire_sim.materials import MATERIAL_DB as _MDB
+                _AIR_K_RT = 0.026
+                _RSI_APP, _RSE_APP = 0.13, 0.04
+
+                def _lam_rt(lyr) -> float:
+                    """LayerConfig から室温熱伝導率 [W/mK] を返す。"""
+                    mt = getattr(lyr, "material_type", "wood")
+                    if mt == "custom" and getattr(lyr, "k_W_mK", None) is not None:
+                        return float(lyr.k_W_mK)
+                    db = _MDB.get(getattr(lyr, "material", "sugi"), {})
+                    pt = db.get("properties_type", "wood")
+                    if pt == "constant":
+                        bk = float(db.get("k", 0.12))
+                    elif pt == "charred_cork":
+                        bk = float(db.get("k", 0.041))
+                    else:
+                        bk = float(db.get("k_measured", 0.12))
+                    if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
+                        vf = float(getattr(lyr, "void_fraction", 0.0))
+                        return (1.0 - vf) * bk + vf * _AIR_K_RT
+                    return bk
+
+                th_rows = []
+                r_sum = 0.0
+                for i, lyr in enumerate(_cfg.specimen.layers):
+                    lam = _lam_rt(lyr)
+                    r_lyr = lyr.thickness_mm / 1000.0 / lam
+                    r_contact = getattr(lyr, "contact_resistance_m2KW", 0.0)
+                    r_sum += r_lyr + r_contact
+                    mat_disp = getattr(lyr, "custom_name", "") or lyr.material
+                    mt = getattr(lyr, "material_type", "wood")
+                    if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
+                        vf_disp = getattr(lyr, "void_fraction", 0.0)
+                        mat_disp += f" (vf={vf_disp:.3f})"
+                    th_rows.append({
+                        "層": i + 1,
+                        "材料": mat_disp,
+                        "厚さ [mm]": f"{lyr.thickness_mm:.1f}",
+                        "λ [W/mK]": f"{lam:.4f}",
+                        "R [m²K/W]": f"{r_lyr:.4f}",
+                    })
+                U_app = 1.0 / (_RSE_APP + r_sum + _RSI_APP)
+                R_app = _RSE_APP + r_sum + _RSI_APP
+                st.dataframe(_pd_th.DataFrame(th_rows), hide_index=True, use_container_width=True)
+                col_u, col_r = st.columns(2)
+                col_u.metric("熱貫流率 U（表面抵抗含む）", f"{U_app:.3f} W/m²K")
+                col_r.metric("熱抵抗 R（表面抵抗含む）", f"{R_app:.3f} m²K/W")
+                st.caption("室温 (20°C) での稳常値。表面抵抗: Rsi=0.13, Rse=0.04 m²K/W（ISO 6946）")
+            except Exception as _e_th:
+                st.caption(f"断熱性能の計算を省略しました: {_e_th}")
+
         # ── グラフ（静止画）───────────────────────────────────────────
         st.markdown("### 📈 グラフ")
         if state.out_dir and (state.out_dir / "summary.png").exists():
