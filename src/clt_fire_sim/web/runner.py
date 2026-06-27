@@ -360,7 +360,7 @@ def _run_simulation_thread(
                 _sim_state.logs.append(log_line)
 
         # ---- ソルバー実行 ----
-        result = solver.solve(
+        _solve_kwargs: dict = dict(
             t_end=t_end_s,
             dt_base=sim.dt_base_s,
             dt_min=sim.dt_min_s,
@@ -370,10 +370,15 @@ def _run_simulation_thread(
             eval_times=eval_times_s,
             progress_callback=_progress_cb,
             stop_event=_stop_event,
-            t_cooling=t_cooling_s,
-            bc_left_cooling=bc_left_cooling,
-            cooling_dt_base=max(sim.dt_base_s, 30.0),
         )
+        if mode == "1D":
+            # 放冷フェーズは1Dのみ対応
+            _solve_kwargs["t_cooling"] = t_cooling_s
+            _solve_kwargs["bc_left_cooling"] = bc_left_cooling
+            _solve_kwargs["cooling_dt_base"] = max(sim.dt_base_s, 30.0)
+        elif t_cooling_s > 0:
+            _log("⚠️ 3Dモードは放冷フェーズ未対応のため、加熱フェーズのみ計算します。")
+        result = solver.solve(**_solve_kwargs)
 
         # ---- 中断チェック ----
         if _stop_event.is_set():
