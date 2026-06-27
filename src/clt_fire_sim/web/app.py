@@ -323,11 +323,13 @@ with tab_result:
 
                 th_rows = []
                 r_sum = 0.0
+                t_sum_m = 0.0
                 for i, lyr in enumerate(_cfg.specimen.layers):
                     lam = _lam_rt(lyr)
                     r_lyr = lyr.thickness_mm / 1000.0 / lam
                     r_contact = getattr(lyr, "contact_resistance_m2KW", 0.0)
                     r_sum += r_lyr + r_contact
+                    t_sum_m += lyr.thickness_mm / 1000.0
                     mat_disp = getattr(lyr, "custom_name", "") or lyr.material
                     mt = getattr(lyr, "material_type", "wood")
                     if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
@@ -338,15 +340,14 @@ with tab_result:
                         "材料": mat_disp,
                         "厚さ [mm]": f"{lyr.thickness_mm:.1f}",
                         "λ [W/mK]": f"{lam:.4f}",
-                        "R [m²K/W]": f"{r_lyr:.4f}",
                     })
                 U_app = 1.0 / (_RSE_APP + r_sum + _RSI_APP)
-                R_app = _RSE_APP + r_sum + _RSI_APP
+                lam_eq = t_sum_m / r_sum if r_sum > 0 else 0.0
                 st.dataframe(_pd_th.DataFrame(th_rows), hide_index=True, use_container_width=True)
-                col_u, col_r = st.columns(2)
+                col_u, col_lam = st.columns(2)
                 col_u.metric("熱貫流率 U（表面抵抗含む）", f"{U_app:.3f} W/m²K")
-                col_r.metric("熱抵抗 R（表面抵抗含む）", f"{R_app:.3f} m²K/W")
-                st.caption("室温 (20°C) での稳常値。表面抵抗: Rsi=0.13, Rse=0.04 m²K/W（ISO 6946）")
+                col_lam.metric("等価熱伝導率 λ_eq（全層）", f"{lam_eq:.4f} W/mK")
+                st.caption("室温 (20°C) での稳常値。λ_eq = 総厚 ÷ ΣR（表面抵抗除く）。U の表面抵抗: Rsi=0.13, Rse=0.04 m²K/W（ISO 6946）")
             except Exception as _e_th:
                 st.caption(f"断熱性能の計算を省略しました: {_e_th}")
 
