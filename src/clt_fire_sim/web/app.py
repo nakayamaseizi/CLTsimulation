@@ -53,6 +53,7 @@ from clt_fire_sim.materials import MATERIAL_DB
 from clt_fire_sim.web import config_editor
 from clt_fire_sim.web import runner as web_runner
 from clt_fire_sim.web import system_info
+from clt_fire_sim.web import viz_plotly
 
 # ---------------------------------------------------------------------------
 # セッション状態の初期化
@@ -415,8 +416,6 @@ with tab_result:
 # タブ4：インタラクティブ ビューア（Phase 7.3）
 # ===========================================================================
 with tab_3d:
-    from clt_fire_sim.web import viz_plotly
-
     _state3d = web_runner.get_state()
 
     # 表示対象：履歴からロードされた結果 > 最新の解析結果
