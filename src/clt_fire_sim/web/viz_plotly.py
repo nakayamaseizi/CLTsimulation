@@ -448,7 +448,7 @@ def make_surface_temp_chart(
         yaxis_title="温度 [°C]",
         xaxis=dict(range=[0, float(times_min.max())]),
         yaxis=dict(range=[0, None]),
-        legend=dict(x=0.02, y=0.98),
+        legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top"),
         height=420,
         hovermode="x unified",
     )
