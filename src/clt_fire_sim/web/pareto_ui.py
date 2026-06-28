@@ -180,6 +180,54 @@ def render_pareto_tab() -> None:
             ))
             st.caption(f"総厚の候補 [mm]: {[int(x) for x in total_options]}")
 
+        # ── (d, p) 有効組み合わせマトリクス ──────────────────────────
+        if d_list and p_list:
+            import pandas as pd
+            _dp_rows = {}
+            for _d in d_list:
+                _label_d = f"d={int(_d) if _d == int(_d) else _d}mm"
+                _row = {}
+                for _p in p_list:
+                    _label_p = f"p={int(_p) if _p == int(_p) else _p}"
+                    if _d == 0:
+                        _row[_label_p] = "孔なし"
+                    elif _p <= _d:
+                        _row[_label_p] = "✗ 除外"
+                    elif _compute_vf(_d, _p) > 0.79:
+                        _row[_label_p] = "✗ vf>79%"
+                    else:
+                        _vf = _compute_vf(_d, _p)
+                        _row[_label_p] = f"✓ vf={_vf:.0%}"
+                _dp_rows[_label_d] = _row
+            _df_dp = pd.DataFrame(_dp_rows).T
+
+            def _color_cell(val):
+                if val.startswith("✗"):
+                    return "background-color:#ffd7d7; color:#c00"
+                if val == "孔なし":
+                    return "background-color:#e8e8e8; color:#555"
+                return "background-color:#d4edda; color:#155724"
+
+            st.markdown("**📋 (d, p) 有効組み合わせ確認**")
+            _n_valid = sum(
+                1 for _d in d_list for _p in p_list
+                if not (_d == 0 and _p != min(p_list))
+                and (_d == 0 or (_p > _d and _compute_vf(_d, _p) <= 0.79))
+            )
+            st.caption(
+                f"✓ 有効: **{_n_valid} 通り**（孔なし×1を含む）　"
+                f"✗ 除外: {len(d_list) * len(p_list) - _n_valid} 通り"
+            )
+            try:
+                _styled = _df_dp.style.map(_color_cell)  # pandas >= 2.1
+            except AttributeError:
+                _styled = _df_dp.style.applymap(_color_cell)  # pandas < 2.1
+            st.dataframe(
+                _styled,
+                use_container_width=True,
+                height=min(35 * (len(d_list) + 1) + 10, 320),
+            )
+
         # ── 表面（火側）無孔パネル厚 ──────────────────────────────────
         st.markdown("---")
         st.markdown("**🛡️ 火側表面パネル（無孔）**")
