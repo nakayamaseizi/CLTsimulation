@@ -733,9 +733,9 @@ def _render_analysis_settings() -> None:
         if cooling_h > 0.0:
             tau_min = st.number_input(
                 "炉内冷却時定数 τ [分]",
-                min_value=30.0, max_value=180.0,
+                min_value=1.0, max_value=200.0,
                 value=st.session_state.cooling_tau_min,
-                step=5.0,
+                step=1.0,
                 key="cooling_tau_input",
                 help=(
                     "指数減衰モデルの時定数。小型マッフル炉（FUW210PB）実測推定値: 75分。\n"
