@@ -161,6 +161,14 @@ def init_session_state() -> None:
     if "specimen_height_mm" not in st.session_state:
         st.session_state.specimen_height_mm = 300.0
 
+    # メッシュ分割数（実行タブで直接指定。サイドバーの mesh_option より優先）
+    if "n_cells_x_run" not in st.session_state:
+        st.session_state["n_cells_x_run"] = 12
+    if "n_cells_y" not in st.session_state:
+        st.session_state["n_cells_y"] = 6
+    if "n_cells_z" not in st.session_state:
+        st.session_state["n_cells_z"] = 6
+
     # 解析条件
     if "t_end_min" not in st.session_state:
         st.session_state.t_end_min = 90.0
@@ -939,9 +947,10 @@ def build_config() -> CLTConfig:
             slit_pitch_mm=slit_pitch_mm,
         ))
 
-    n_cells = MESH_OPTIONS.get(
-        st.session_state.get("mesh_option", "標準（推奨）"), 12
-    )
+    n_cells = int(st.session_state.get(
+        "n_cells_x_run",
+        MESH_OPTIONS.get(st.session_state.get("mesh_option", "標準（推奨）"), 12),
+    ))
     t_end = float(st.session_state.get("t_end_min", 90.0))
     T_init = float(st.session_state.get("T_init", 20.0))
     spec_name = st.session_state.get("specimen_name", "CLT試験体")

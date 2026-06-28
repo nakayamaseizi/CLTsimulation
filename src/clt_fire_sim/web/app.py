@@ -190,13 +190,54 @@ with tab_run:
     except Exception:
         pass
 
-    # ── 解析設定サマリー ─────────────────────────────────────────────
+    # ── メッシュ設定 ─────────────────────────────────────────────────
     _cur_mode = st.session_state.get("analysis_mode", "1D")
+    _is_3d_run = (_cur_mode == "3D")
+    with st.expander("⚙️ メッシュ設定", expanded=False):
+        _nx_label = "X方向セル数/層（厚み方向）" if _is_3d_run else "セル数/層（厚み方向）"
+        st.slider(
+            _nx_label,
+            min_value=4, max_value=40, step=2,
+            key="n_cells_x_run",
+            help="層あたりの厚み方向分割数。大きいほど精度↑・計算時間↑。",
+        )
+        _nx = int(st.session_state["n_cells_x_run"])
+        if _is_3d_run:
+            _c1, _c2 = st.columns(2)
+            _c1.slider(
+                "Y方向セル数（幅方向）",
+                min_value=4, max_value=20, step=2,
+                key="n_cells_y",
+                help="幅方向（y）の分割数。孔径/ピッチが小さいほど大きな値が必要。",
+            )
+            _c2.slider(
+                "Z方向セル数（高さ方向）",
+                min_value=4, max_value=20, step=2,
+                key="n_cells_z",
+                help="高さ方向（z）の分割数。",
+            )
+            _ny = int(st.session_state["n_cells_y"])
+            _nz = int(st.session_state["n_cells_z"])
+            _n_layers_run = len(config.specimen.layers)
+            st.caption(
+                f"総セル数（目安）: {_n_layers_run}層 × {_nx} × {_ny} × {_nz}"
+                f" = **{_n_layers_run * _nx * _ny * _nz:,} セル**"
+            )
+        else:
+            _n_layers_run = len(config.specimen.layers)
+            st.caption(
+                f"総セル数: {_n_layers_run}層 × {_nx} セル"
+                f" = **{_n_layers_run * _nx:,} セル**"
+            )
+
+    # ── 解析設定サマリー ─────────────────────────────────────────────
+    _nx_disp = int(st.session_state.get("n_cells_x_run", 12))
     st.markdown(
         f"**{config.specimen.name}** | "
         f"{_n_layers} 層 {_total_mm:.0f}mm | "
         f"{config.simulation.t_end_min:.0f} 分解析 | "
-        f"**{_cur_mode} モード**"
+        f"**{_cur_mode} モード** | "
+        f"メッシュ {_nx_disp} セル/層"
     )
 
     # ── 解析開始 / 中断ボタン ─────────────────────────────────────────
@@ -211,8 +252,8 @@ with tab_run:
             _mode = st.session_state.get("analysis_mode", "1D")
             _w_mm = float(st.session_state.get("specimen_width_mm", 300.0))
             _h_mm = float(st.session_state.get("specimen_height_mm", 300.0))
-            _ny = int(st.session_state.get("n_cells_y", 4))
-            _nz = int(st.session_state.get("n_cells_z", 4))
+            _ny = int(st.session_state.get("n_cells_y", 6))
+            _nz = int(st.session_state.get("n_cells_z", 6))
             web_runner.start_simulation(
                 config,
                 outputs_base=outputs_base,
