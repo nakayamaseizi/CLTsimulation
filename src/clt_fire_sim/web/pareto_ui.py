@@ -103,52 +103,60 @@ def render_pareto_tab() -> None:
     with st.expander("⚙️ 探索パラメータ設定", expanded=True):
         col_d, col_p, col_t = st.columns(3)
 
+        # ── on_click コールバック（描画前に session_state を更新） ──────
+        _D_PRESETS = [0, 6, 12, 18, 24, 30, 36, 40]
+        _P_PRESETS = [30, 40, 50, 60, 80, 100]
+
+        def _on_add_d():
+            v = st.session_state["pareto_d_custom_input"]
+            extras = st.session_state.get("pareto_extra_d", [])
+            if v not in extras and v not in _D_PRESETS:
+                st.session_state["pareto_extra_d"] = sorted(extras + [v])
+            sel = list(st.session_state.get("pareto_d_list", []))
+            if v not in sel:
+                st.session_state["pareto_d_list"] = sorted(sel + [v])
+
+        def _on_add_p():
+            v = st.session_state["pareto_p_custom_input"]
+            extras = st.session_state.get("pareto_extra_p", [])
+            if v not in extras and v not in _P_PRESETS:
+                st.session_state["pareto_extra_p"] = sorted(extras + [v])
+            sel = list(st.session_state.get("pareto_p_list", []))
+            if v not in sel:
+                st.session_state["pareto_p_list"] = sorted(sel + [v])
+
         with col_d:
             st.markdown("**🔵 孔径 d [mm]**")
-            _d_presets = [0, 6, 12, 18, 24, 30, 36, 40]
-            _d_opts = sorted(set(_d_presets + st.session_state.get("pareto_extra_d", [])))
+            _d_opts = sorted(set(_D_PRESETS + st.session_state.get("pareto_extra_d", [])))
             d_selected = st.multiselect(
                 "孔径候補を選択",
                 _d_opts,
                 key="pareto_d_list",
             )
             _dc1, _dc2 = st.columns([3, 1])
-            _d_new = _dc1.number_input(
+            _dc1.number_input(
                 "追加 [mm]", min_value=1.0, max_value=200.0,
                 value=15.0, step=1.0, key="pareto_d_custom_input",
             )
-            if _dc2.button("追加", key="pareto_d_add_btn", use_container_width=True):
-                _extras_d = st.session_state.get("pareto_extra_d", [])
-                if _d_new not in _extras_d and _d_new not in _d_presets:
-                    st.session_state["pareto_extra_d"] = sorted(_extras_d + [_d_new])
-                _cur = list(st.session_state.get("pareto_d_list", []))
-                if _d_new not in _cur:
-                    st.session_state["pareto_d_list"] = sorted(_cur + [_d_new])
-                st.rerun()
+            _dc2.button("追加", key="pareto_d_add_btn",
+                        on_click=_on_add_d, use_container_width=True)
             d_list = sorted(float(d) for d in d_selected) if d_selected else [0.0]
 
         with col_p:
             st.markdown("**📐 ピッチ p [mm]**")
-            _p_presets = [30, 40, 50, 60, 80, 100]
-            _p_opts = sorted(set(_p_presets + st.session_state.get("pareto_extra_p", [])))
+            _p_opts = sorted(set(_P_PRESETS + st.session_state.get("pareto_extra_p", [])))
             p_selected = st.multiselect(
                 "ピッチ候補を選択",
                 _p_opts,
                 key="pareto_p_list",
             )
             _pc1, _pc2 = st.columns([3, 1])
-            _p_new = _pc1.number_input(
+            _pc1.number_input(
                 "追加 [mm]", min_value=1.0, max_value=500.0,
                 value=45.0, step=1.0, key="pareto_p_custom_input",
             )
-            if _pc2.button("追加", key="pareto_p_add_btn", use_container_width=True):
-                _extras_p = st.session_state.get("pareto_extra_p", [])
-                if _p_new not in _extras_p and _p_new not in _p_presets:
-                    st.session_state["pareto_extra_p"] = sorted(_extras_p + [_p_new])
-                _cur = list(st.session_state.get("pareto_p_list", []))
-                if _p_new not in _cur:
-                    st.session_state["pareto_p_list"] = sorted(_cur + [_p_new])
-                st.rerun()
+            _pc2.button("追加", key="pareto_p_add_btn",
+                        on_click=_on_add_p, use_container_width=True)
             p_list = sorted(float(p) for p in p_selected) if p_selected else [50.0]
 
         with col_t:
