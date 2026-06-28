@@ -170,6 +170,10 @@ def init_session_state() -> None:
         st.session_state.T_init = 20.0
     if "unheated_bc_option" not in st.session_state:
         st.session_state.unheated_bc_option = UNHEATED_BC_OPTIONS[0]
+    if "alpha_c_unheated" not in st.session_state:
+        st.session_state.alpha_c_unheated = 9.0
+    if "eps_m_unheated" not in st.session_state:
+        st.session_state.eps_m_unheated = 0.8
     if "specimen_name" not in st.session_state:
         st.session_state.specimen_name = "CLT試験体"
 
@@ -698,6 +702,24 @@ def _render_analysis_settings() -> None:
         key="unheated_bc_select",
         help="非加熱面（裏面）の熱的境界条件。Eurocode 5 標準は対流＋輻射冷却。",
     )
+    if "断熱" not in st.session_state.unheated_bc_option:
+        col_ac, col_em = st.columns(2)
+        st.session_state.alpha_c_unheated = col_ac.slider(
+            "α_c [W/m²K]",
+            min_value=1.0, max_value=30.0,
+            value=float(st.session_state.alpha_c_unheated),
+            step=1.0,
+            key="alpha_c_slider",
+            help="非加熱面の対流熱伝達率。Eurocode 5 規定値: 9 W/m²K。実験環境に強制対流があると 15〜25 程度。",
+        )
+        st.session_state.eps_m_unheated = col_em.slider(
+            "ε_m [-]",
+            min_value=0.1, max_value=1.0,
+            value=float(st.session_state.eps_m_unheated),
+            step=0.05,
+            key="eps_m_slider",
+            help="非加熱面の放射率。Eurocode 5 規定値: 0.8。値を大きくすると輻射放熱が増加する。",
+        )
 
     st.session_state.mesh_option = st.selectbox(
         "メッシュの細かさ",
@@ -929,7 +951,9 @@ def build_config() -> CLTConfig:
     if "断熱" in bc_option:
         unheated_bc = UnheatedBCConfig(alpha_c=0.0, eps_m=0.0, T_inf=T_init)
     else:
-        unheated_bc = UnheatedBCConfig(alpha_c=9.0, eps_m=0.8, T_inf=T_init)
+        alpha_c_val = float(st.session_state.get("alpha_c_unheated", 9.0))
+        eps_m_val = float(st.session_state.get("eps_m_unheated", 0.8))
+        unheated_bc = UnheatedBCConfig(alpha_c=alpha_c_val, eps_m=eps_m_val, T_inf=T_init)
 
     # 評価時刻（60 分以下の加熱時間には 60 分評価をスキップ）
     eval_times = [t for t in [60.0, 75.0, 90.0, 120.0] if t <= t_end]
