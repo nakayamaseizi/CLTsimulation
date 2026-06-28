@@ -487,18 +487,33 @@ class FVM3DSolver:
         eval_times: list[float] | None = None,
         stop_event: threading.Event | None = None,
         progress_callback: Any | None = None,
+        # ---- 放冷フェーズ設定（1D と共通インターフェース）----
+        t_cooling: float = 0.0,
+        bc_left_cooling: Any | None = None,
+        cooling_dt_base: float = 30.0,
     ) -> dict:
         """指定時刻まで時間積分を実行する。
+
+        Parameters
+        ----------
+        t_cooling : float
+            加熱終了後の放冷シミュレーション時間 [s]。0 = 放冷なし。
+        bc_left_cooling : Any or None
+            放冷フェーズの左端（加熱面）境界条件。None の場合は加熱 BC のまま維持。
+            通常は CoolingFurnaceBC インスタンスを渡す。
+        cooling_dt_base : float
+            放冷フェーズの基本時間刻み [s]。デフォルト 30 s。
 
         Returns
         -------
         dict
             {
-              "times"        : np.ndarray  (n_times,)
-              "temperatures" : np.ndarray  (n_times, N)  ← 平坦化済み
-              "x_centers"    : np.ndarray  (nx,)         ← x 方向セル中心
-              "char_depths"  : np.ndarray  (n_times,)    ← y,z 平均炭化深さ
-              "mesh"         : Mesh3D
+              "times"         : np.ndarray  (n_times,)
+              "temperatures"  : np.ndarray  (n_times, N)  ← 平坦化済み
+              "x_centers"     : np.ndarray  (nx,)         ← x 方向セル中心
+              "char_depths"   : np.ndarray  (n_times,)    ← y,z 平均炭化深さ
+              "mesh"          : Mesh3D
+              "t_heating_end" : float                     ← 加熱終了時刻 [s]
             }
         """
         if eval_times is None:
@@ -543,6 +558,7 @@ class FVM3DSolver:
             f"N={self.mesh.n_cells}"
         )
 
+        # ---- 加熱フェーズ ----
         while self.t < t_end - 1e-6:
             if stop_event is not None and stop_event.is_set():
                 break
@@ -560,10 +576,42 @@ class FVM3DSolver:
             if progress_callback is not None:
                 progress_callback(self.t, t_end, self.T)
 
+        t_heating_end = self.t
         logger.info(
-            f"3D解析完了: t={self.t:.1f}s, "
+            f"3D加熱フェーズ完了: t={self.t:.1f}s, "
             f"T_max={self.T.max():.1f}°C, 平均炭化深さ={char_out[-1]*1000:.1f}mm"
         )
+
+        # ---- 放冷フェーズ ----
+        if t_cooling > 0.0:
+            t_cool_end = self.t + t_cooling
+            bc_left_orig = self.bc_left
+            if bc_left_cooling is not None:
+                self.bc_left = bc_left_cooling
+            logger.info(
+                f"3D放冷フェーズ開始: {t_cooling/60:.0f}分間放冷, "
+                f"dt={cooling_dt_base}s"
+            )
+            while self.t < t_cool_end - 1e-6:
+                if stop_event is not None and stop_event.is_set():
+                    logger.info(f"3D放冷フェーズを中断: t={self.t:.1f}s")
+                    break
+                dt_c = min(cooling_dt_base, dt_max, t_cool_end - self.t)
+                dt_c = max(dt_c, 1e-3)
+                self.step(dt_c, n_picard=n_picard)
+
+                if _should_record(self.t):
+                    times_out.append(self.t)
+                    temps_out.append(self.T.copy())
+                    char_out.append(_mean_char_depth())
+                    if progress_callback is not None:
+                        progress_callback(self.t, t_cool_end, self.T)
+
+            self.bc_left = bc_left_orig
+            logger.info(
+                f"3D放冷フェーズ完了: t={self.t:.1f}s ({self.t/60:.1f}min), "
+                f"T_max={self.T.max():.1f}°C"
+            )
 
         return {
             "times": np.array(times_out),
@@ -571,6 +619,7 @@ class FVM3DSolver:
             "x_centers": self.mesh.x_centers,
             "char_depths": np.array(char_out),
             "mesh": self.mesh,
+            "t_heating_end": t_heating_end,
         }
 
 
