@@ -109,7 +109,8 @@ def _make_layer(
     k_W_mK: float | None = None,
     cp_J_kgK: float | None = None,
     custom_name: str = "",
-    hole_diameter_mm: float = 3.0,
+    hole_diameter_mm: float = 10.0,
+    hole_pitch_mm: float = 30.0,
     hole_depth_mm: float = 20.0,
     slit_width_mm: float = 15.0,
     slit_depth_mm: float = 3.0,
@@ -129,6 +130,7 @@ def _make_layer(
         "cp_J_kgK": cp_J_kgK,
         "custom_name": custom_name,
         "hole_diameter_mm": hole_diameter_mm,
+        "hole_pitch_mm": hole_pitch_mm,
         "hole_depth_mm": hole_depth_mm,
         "slit_width_mm": slit_width_mm,
         "slit_depth_mm": slit_depth_mm,
@@ -479,41 +481,52 @@ def _render_layer_editor() -> None:
             # ── 有孔板（簡易：並列混合則） ──────────────────────────
             elif mat_type == "perforated_wood":
                 _render_base_material()
-                cur_vf = layer.get("void_fraction", 0.1)
-                st.slider(
-                    "空洞率（開孔率） [%]",
-                    min_value=5, max_value=60,
-                    value=int(cur_vf * 100),
-                    step=5,
-                    key=f"vf_{lid}",
-                    help="板断面積に占める孔の割合。並列混合則で等価λを計算します。",
+                import math as _math
+                c_d, c_p = st.columns(2)
+                c_d.number_input(
+                    "孔径 d [mm]",
+                    min_value=3.0, max_value=100.0,
+                    value=float(layer.get("hole_diameter_mm", 10.0)),
+                    step=1.0,
+                    key=f"phi_{lid}",
+                    help="円形貫通孔の直径",
                 )
-                vf_disp = st.session_state.get(f"vf_{lid}", int(cur_vf * 100)) / 100
+                c_p.number_input(
+                    "ピッチ P [mm]",
+                    min_value=5.0, max_value=200.0,
+                    value=float(layer.get("hole_pitch_mm", 30.0)),
+                    step=1.0,
+                    key=f"pitch_{lid}",
+                    help="孔の中心間距離（正方格子配置）",
+                )
+                _d_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 10.0)))
+                _p_v = float(st.session_state.get(f"pitch_{lid}", layer.get("hole_pitch_mm", 30.0)))
+                _vf_v = min(_math.pi * (_d_v / 2) ** 2 / max(_p_v, _d_v + 0.1) ** 2, 0.95)
                 st.caption(
-                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1-vf_disp):.0f} kg/m³ "
-                    f"（空洞率 {vf_disp*100:.0f}%）"
+                    f"開孔率 φ = π(d/2)²/P² ≈ {_vf_v*100:.1f}%　"
+                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1 - _vf_v):.0f} kg/m³"
                 )
 
             # ── 有孔板（精密：池畑 2021 実験式） ──────────────────
             elif mat_type == "perforated_wood_advanced":
                 _render_base_material()
-                cur_vf = layer.get("void_fraction", 0.1)
-                st.slider(
-                    "開孔率 φ [%]",
-                    min_value=5, max_value=55,
-                    value=int(cur_vf * 100),
-                    step=1,
-                    key=f"vf_{lid}",
-                    help="板断面積に占める孔の割合（≒ π(Φ/2)² / P²）",
-                )
-                c_phi, c_h = st.columns(2)
+                import math as _math
+                c_phi, c_p2, c_h = st.columns(3)
                 c_phi.number_input(
                     "孔径 Φ [mm]",
                     min_value=3.0, max_value=18.0,
-                    value=float(layer.get("hole_diameter_mm", 3.0)),
+                    value=float(layer.get("hole_diameter_mm", 10.0)),
                     step=1.0,
                     key=f"phi_{lid}",
                     help="池畑(2021)実験式の適用範囲: 3〜18 mm",
+                )
+                c_p2.number_input(
+                    "ピッチ P [mm]",
+                    min_value=5.0, max_value=200.0,
+                    value=float(layer.get("hole_pitch_mm", 30.0)),
+                    step=1.0,
+                    key=f"pitch_{lid}",
+                    help="孔の中心間距離（正方格子配置）",
                 )
                 c_h.number_input(
                     "孔深さ H [mm]",
@@ -523,15 +536,17 @@ def _render_layer_editor() -> None:
                     key=f"hole_h_{lid}",
                     help="池畑(2021)実験式の適用範囲: 6〜30 mm。板厚と同じ場合は貫通孔。",
                 )
-                # Ra1 を表示
+                # 開孔率 & Ra1 表示
                 try:
                     from clt_fire_sim.materials import _ra1_ikehata
-                    phi_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 3.0)))
+                    phi_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 10.0)))
+                    p2_v = float(st.session_state.get(f"pitch_{lid}", layer.get("hole_pitch_mm", 30.0)))
                     h_v = float(st.session_state.get(f"hole_h_{lid}", layer.get("hole_depth_mm", 20.0)))
+                    vf_adv = min(_math.pi * (phi_v / 2) ** 2 / max(p2_v, phi_v + 0.1) ** 2, 0.95)
                     ra1 = _ra1_ikehata(phi_v, h_v)
                     st.caption(
-                        f"📐 池畑式 Ra1 = {ra1*1e4:.2f} × 10⁻⁴ m²K/W "
-                        f"（Φ={phi_v:.0f}mm, H={h_v:.0f}mm）"
+                        f"開孔率 φ ≈ {vf_adv*100:.1f}%　"
+                        f"📐 池畑式 Ra1 = {ra1*1e4:.2f} × 10⁻⁴ m²K/W"
                     )
                 except Exception:
                     pass
@@ -836,6 +851,7 @@ def build_config() -> CLTConfig:
     ウィジェットのセッション状態キー（例: `f"mat_{lid}"`）から値を読み取り、
     Pydantic モデルに変換する。
     """
+    import math as _math
     layers: list[LayerConfig] = []
     for layer in st.session_state.layers:
         lid = layer["id"]
@@ -843,8 +859,12 @@ def build_config() -> CLTConfig:
         # 材料タイプ
         _type_label_to_key = {
             "🌲 木材": "wood",
-            "◉ 有孔板": "perforated_wood",
+            "◉ 有孔板（簡易）": "perforated_wood",
+            "🔬 有孔板（精密・池畑式）": "perforated_wood_advanced",
+            "〰 スリット加工": "slitted_wood",
             "⚙️ カスタム": "custom",
+            # 後方互換
+            "◉ 有孔板": "perforated_wood",
         }
         type_label = st.session_state.get(f"mat_type_radio_{lid}", "🌲 木材")
         mat_type = _type_label_to_key.get(type_label, layer.get("material_type", "wood"))
@@ -858,13 +878,16 @@ def build_config() -> CLTConfig:
         rho_0 = st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"])
         mc_pct = st.session_state.get(f"mc_{lid}", int(layer["moisture_content"] * 100))
 
-        # 有孔板（簡易・精密共通）
-        vf_pct = st.session_state.get(f"vf_{lid}", int(layer.get("void_fraction", 0.0) * 100))
-        void_fraction = float(vf_pct) / 100.0
-
-        # 有孔板精密モデル用
-        hole_diameter_mm = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 3.0)))
+        # 有孔板用：孔径 + ピッチ → 開孔率を自動計算
+        hole_diameter_mm = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 10.0)))
+        hole_pitch_mm = float(st.session_state.get(f"pitch_{lid}", layer.get("hole_pitch_mm", 30.0)))
         hole_depth_mm = float(st.session_state.get(f"hole_h_{lid}", layer.get("hole_depth_mm", 20.0)))
+
+        if mat_type in ("perforated_wood", "perforated_wood_advanced"):
+            _p = max(hole_pitch_mm, hole_diameter_mm + 0.1)
+            void_fraction = min(_math.pi * (hole_diameter_mm / 2) ** 2 / _p ** 2, 0.95)
+        else:
+            void_fraction = 0.0
 
         # スリット加工用
         slit_width_mm = float(st.session_state.get(f"sw_{lid}", layer.get("slit_width_mm", 15.0)))
@@ -887,6 +910,7 @@ def build_config() -> CLTConfig:
             cp_J_kgK=float(cp_val) if cp_val is not None else None,
             custom_name=custom_name,
             hole_diameter_mm=hole_diameter_mm,
+            hole_pitch_mm=hole_pitch_mm,
             hole_depth_mm=hole_depth_mm,
             slit_width_mm=slit_width_mm,
             slit_depth_mm=slit_depth_mm,
@@ -986,9 +1010,11 @@ def _layer_to_dict(layer: "LayerConfig") -> dict:
         d["cp_J_kgK"] = layer.cp_J_kgK
     if layer.custom_name:
         d["custom_name"] = layer.custom_name
-    # 有孔板精密モデル用
-    if layer.material_type == "perforated_wood_advanced":
+    # 有孔板用（簡易・精密共通）
+    if layer.material_type in ("perforated_wood", "perforated_wood_advanced"):
         d["hole_diameter_mm"] = layer.hole_diameter_mm
+        d["hole_pitch_mm"] = layer.hole_pitch_mm
+    if layer.material_type == "perforated_wood_advanced":
         d["hole_depth_mm"] = layer.hole_depth_mm
     # スリット加工用
     if layer.material_type == "slitted_wood":

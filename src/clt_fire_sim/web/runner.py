@@ -297,7 +297,12 @@ def _run_simulation_thread(
             props.setup(x_all_3d)
             _log(f"3D物性値setup完了: {len(x_all_3d)}セル")
 
-            solver = FVM3DSolver(mesh, props, bc_left, bc_right, T_init=T_init)
+            # 有孔板レイヤーがあれば void_mask を生成
+            void_mask = _build_void_mask_3d(spec, layer_thicknesses_m, mesh)
+            if void_mask is not None:
+                _log(f"void_mask生成: 有孔セル {int(void_mask.sum())} / {mesh.nx*mesh.ny*mesh.nz}")
+            solver = FVM3DSolver(mesh, props, bc_left, bc_right, T_init=T_init,
+                                 void_mask=void_mask)
 
         else:
             # ---- 1D メッシュ ----
@@ -431,6 +436,68 @@ def _run_simulation_thread(
             _sim_state.error_msg = str(exc)
             _sim_state.elapsed_s = time.monotonic() - wall_start
         traceback.print_exc()
+
+
+def _make_pitch_circles_yz(
+    ny: int, nz: int, Ly: float, Lz: float,
+    radius_m: float, pitch_m: float,
+) -> "np.ndarray":
+    """正方格子配置の円形孔 y-z マスクをピッチ指定で生成する。
+
+    孔中心は (P/2, P/2), (P/2, 3P/2), ... の格子点に配置される。
+    """
+    import numpy as np
+    Y = np.arange(ny) * (Ly / ny) + Ly / (2 * ny)  # セル中心 y 座標
+    Z = np.arange(nz) * (Lz / nz) + Lz / (2 * nz)  # セル中心 z 座標
+    YY, ZZ = np.meshgrid(Y, Z, indexing="ij")        # (ny, nz)
+
+    mask = np.zeros((ny, nz), dtype=bool)
+    cy = pitch_m / 2.0
+    while cy < Ly:
+        cz = pitch_m / 2.0
+        while cz < Lz:
+            mask |= (YY - cy) ** 2 + (ZZ - cz) ** 2 <= radius_m ** 2
+            cz += pitch_m
+        cy += pitch_m
+    return mask
+
+
+def _build_void_mask_3d(spec: Any, layer_thicknesses_m: list, mesh: Any) -> "np.ndarray | None":
+    """各層の有孔板設定から 3D void_mask (nx, ny, nz) を生成する。
+
+    perforated_wood / perforated_wood_advanced レイヤーについて、
+    hole_diameter_mm と hole_pitch_mm から円形孔パターンを生成し、
+    そのレイヤーの x 範囲のセルに適用する。
+    """
+    import numpy as np
+    nx, ny, nz = mesh.nx, mesh.ny, mesh.nz
+    Ly = float(mesh.y_faces[-1])
+    Lz = float(mesh.z_faces[-1])
+
+    void_mask = np.zeros((nx, ny, nz), dtype=bool)
+    x_cum = np.cumsum([0.0] + layer_thicknesses_m)
+
+    for li, la in enumerate(spec.layers):
+        if la.material_type not in ("perforated_wood", "perforated_wood_advanced"):
+            continue
+        d_mm = float(getattr(la, "hole_diameter_mm", 10.0))
+        p_mm = float(getattr(la, "hole_pitch_mm", 30.0))
+        if p_mm <= d_mm:
+            p_mm = d_mm + 1.0  # 最低限の安全マージン
+        radius_m = (d_mm / 2.0) / 1000.0
+        pitch_m = p_mm / 1000.0
+
+        void_yz = _make_pitch_circles_yz(ny, nz, Ly, Lz, radius_m, pitch_m)
+
+        # この層に対応する x セルインデックスを特定
+        x0, x1 = x_cum[li], x_cum[li + 1]
+        xi_indices = np.where(
+            (mesh.x_centers >= x0 - 1e-9) & (mesh.x_centers < x1 + 1e-9)
+        )[0]
+        for xi in xi_indices:
+            void_mask[xi, :, :] = void_yz
+
+    return void_mask if np.any(void_mask) else None
 
 
 def _extract_char_depth_1d(x_centers: Any, T: Any) -> float:

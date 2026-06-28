@@ -84,7 +84,8 @@ class LayerConfig(BaseModel):
         ),
     )
     # ---- 有孔加工精密モデル（perforated_wood_advanced）用 ----
-    hole_diameter_mm: float = Field(default=3.0, gt=0, description="孔径 [mm]（池畑式: 3〜18mm）")
+    hole_diameter_mm: float = Field(default=10.0, gt=0, description="孔径 [mm]")
+    hole_pitch_mm: float = Field(default=30.0, gt=0, description="孔ピッチ（中心間距離）[mm]")
     hole_depth_mm: float = Field(default=20.0, gt=0, description="孔深さ [mm]（池畑式: 6〜30mm）")
     # ---- スリット加工モデル（slitted_wood）用 ----
     slit_width_mm: float = Field(default=15.0, gt=0, description="スリット幅 [mm]")
