@@ -284,6 +284,7 @@ class MultiLayerProperties:
         self._boundaries = np.cumsum([0.0] + list(layer_thicknesses))
         self._cell_layer: np.ndarray | None = None
         self._contact_R_at_interface: np.ndarray | None = None  # セル界面の接触熱抵抗配列
+        self._dried_mask: np.ndarray | None = None  # 一度でも120°Cを超えたセルのフラグ
 
     def setup(self, x_centers: np.ndarray) -> None:
         """セル中心座標から各セルが属する層インデックスを計算する。
@@ -320,12 +321,19 @@ class MultiLayerProperties:
                 R_contact[i] = self.contact_resistances[layer_i]
         self._contact_R_at_interface = R_contact
 
+        self._dried_mask = np.zeros(len(x_centers), dtype=bool)
+
         any_contact = np.any(R_contact > 0)
         logger.debug(
             f"MultiLayerProperties.setup: {len(x_centers)} セル, "
             f"各層のセル数={[int((self._cell_layer == i).sum()) for i in range(len(self.layer_props))]}, "
             f"接触熱抵抗={'あり' if any_contact else 'なし'}"
         )
+
+    def update_dried_state(self, T: np.ndarray) -> None:
+        """120°Cを超えたセルを乾燥済みとしてフラグを立てる（不可逆）。"""
+        if self._dried_mask is not None:
+            self._dried_mask |= T > 120.0
 
     def _check_setup(self, n_cells: int) -> None:
         """setup() が正しく呼ばれているか確認する。"""
@@ -361,6 +369,8 @@ class MultiLayerProperties:
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """全セルの体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。
 
+        乾燥済みセル（一度でも120°Cを超えた）は蒸発ピークを再適用しない。
+
         Parameters
         ----------
         T : np.ndarray
@@ -374,9 +384,18 @@ class MultiLayerProperties:
         self._check_setup(len(T))
         rho_cp = np.empty_like(T, dtype=float)
         for layer_idx, props in enumerate(self.layer_props):
-            mask = self._cell_layer == layer_idx
-            if mask.any():
-                rho_cp[mask] = props.get_rho_cp_array(T[mask])
+            layer_mask = self._cell_layer == layer_idx
+            if not layer_mask.any():
+                continue
+            if self._dried_mask is not None and hasattr(props, 'get_rho_cp_dry_array'):
+                wet_mask = layer_mask & ~self._dried_mask
+                dry_mask = layer_mask & self._dried_mask
+                if wet_mask.any():
+                    rho_cp[wet_mask] = props.get_rho_cp_array(T[wet_mask])
+                if dry_mask.any():
+                    rho_cp[dry_mask] = props.get_rho_cp_dry_array(T[dry_mask])
+            else:
+                rho_cp[layer_mask] = props.get_rho_cp_array(T[layer_mask])
         return rho_cp
 
 
@@ -735,6 +754,8 @@ class FVM1DSolver:
 
         self.T = T_iter
         self.t += dt
+        if hasattr(self.props, 'update_dried_state'):
+            self.props.update_dried_state(self.T)
 
     def solve(
         self,

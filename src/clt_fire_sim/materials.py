@@ -281,6 +281,7 @@ class WoodProperties:
         self.k_scale = float(k_scale)
         self.k_char_factor = float(k_char_factor)
 
+        self._smooth_half_width = smooth_half_width
         # 各テーブルを生成してスムージング
         self._rho_ratio_table = smooth_table_jumps(
             _make_density_ratio_table(moisture_content),
@@ -292,6 +293,15 @@ class WoodProperties:
         )
         self._k_table = smooth_table_jumps(
             WOOD_THERMAL_CONDUCTIVITY,
+            smooth_half_width,
+        )
+        # 乾燥後（含水率0%）テーブル: 放冷フェーズで蒸発ピークを再適用しないため
+        self._cp_table_dry = smooth_table_jumps(
+            _make_specific_heat_table(0.0),
+            smooth_half_width,
+        )
+        self._rho_ratio_table_dry = smooth_table_jumps(
+            _make_density_ratio_table(0.0),
             smooth_half_width,
         )
 
@@ -342,6 +352,18 @@ class WoodProperties:
         rho = self.rho_0 * rho_ratio
         # ゼロ除算防止：炭化後の密度が 0 に近づいても最低値を設ける
         rho = np.maximum(rho, 1.0)  # [kg/m³]
+        return rho * cp
+
+    def get_rho_cp_dry_array(self, T: np.ndarray) -> np.ndarray:
+        """乾燥後の体積熱容量 [J/(m³·K)] を返す（放冷フェーズ用）。
+
+        120°C を超えて一度乾燥したセルは水分が蒸発済みのため、
+        冷却時に 99〜120°C の cp スパイク（蒸発潜熱）を再適用しない。
+        含水率 0% のテーブルを使用することでスパイクを除去する。
+        """
+        rho_ratio = table_interp(self._rho_ratio_table_dry, T)
+        cp = table_interp(self._cp_table_dry, T)
+        rho = np.maximum(self.rho_0 * rho_ratio, 1.0)
         return rho * cp
 
     def get_density_array(self, T: np.ndarray) -> np.ndarray:
@@ -758,6 +780,11 @@ class PerforatedWoodProperties:
         rho_cp_wood = self.base.get_rho_cp_array(T)
         return (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
 
+    def get_rho_cp_dry_array(self, T: np.ndarray) -> np.ndarray:
+        """乾燥後の等価体積熱容量を返す（放冷フェーズ用）。"""
+        rho_cp_wood = self.base.get_rho_cp_dry_array(T)
+        return (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+
 
 # ---------------------------------------------------------------------------
 # 有孔加工精密モデル（池畑実験式、2021）
@@ -891,6 +918,14 @@ class PerforatedWoodAdvanced:
         h_ratio = self._h_ratio
         return h_ratio * rho_cp_eff_holed + (1.0 - h_ratio) * rho_cp_wood
 
+    def get_rho_cp_dry_array(self, T: np.ndarray) -> np.ndarray:
+        """乾燥後の体積熱容量（蒸発ピーク再適用なし）。"""
+        T = np.asarray(T, dtype=float)
+        rho_cp_wood = self.base.get_rho_cp_dry_array(T)
+        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        h_ratio = self._h_ratio
+        return h_ratio * rho_cp_eff_holed + (1.0 - h_ratio) * rho_cp_wood
+
 
 # ---------------------------------------------------------------------------
 # スリット加工木材の等価物性値クラス
@@ -1000,6 +1035,14 @@ class SlittedWoodProperties:
         """等価体積熱容量を返す（並列混合則で近似）。"""
         T = np.asarray(T, dtype=float)
         rho_cp_wood = self.base.get_rho_cp_array(T)
+        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        d_ratio = self._d_ratio
+        return d_ratio * rho_cp_eff_slit + (1.0 - d_ratio) * rho_cp_wood
+
+    def get_rho_cp_dry_array(self, T: np.ndarray) -> np.ndarray:
+        """乾燥後の体積熱容量（蒸発ピーク再適用なし）。"""
+        T = np.asarray(T, dtype=float)
+        rho_cp_wood = self.base.get_rho_cp_dry_array(T)
         rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
         d_ratio = self._d_ratio
         return d_ratio * rho_cp_eff_slit + (1.0 - d_ratio) * rho_cp_wood

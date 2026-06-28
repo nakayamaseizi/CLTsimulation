@@ -475,6 +475,8 @@ class FVM3DSolver:
 
         self.T = T_iter
         self.t += dt
+        if hasattr(self.props, 'update_dried_state'):
+            self.props.update_dried_state(self.T)
 
     def solve(
         self,
