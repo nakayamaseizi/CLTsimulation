@@ -30,6 +30,11 @@ def render_pareto_tab() -> None:
         st.session_state["pareto_extra_d"] = []
     if "pareto_extra_p" not in st.session_state:
         st.session_state["pareto_extra_p"] = []
+    # multiselect の初期選択（キーが未設定のときのみ）
+    if "pareto_d_list" not in st.session_state:
+        st.session_state["pareto_d_list"] = [0, 6, 12, 18, 24, 30]
+    if "pareto_p_list" not in st.session_state:
+        st.session_state["pareto_p_list"] = [30, 40, 50, 60, 80, 100]
 
     st.header("🎯 パレート最適化（孔パターン×ラミナ構成）")
     st.caption(
@@ -100,86 +105,51 @@ def render_pareto_tab() -> None:
 
         with col_d:
             st.markdown("**🔵 孔径 d [mm]**")
-            d_presets = [0, 6, 12, 18, 24, 30, 36, 40]
+            _d_presets = [0, 6, 12, 18, 24, 30, 36, 40]
+            _d_opts = sorted(set(_d_presets + st.session_state.get("pareto_extra_d", [])))
             d_selected = st.multiselect(
                 "孔径候補を選択",
-                d_presets,
-                default=[0, 6, 12, 18, 24, 30],
+                _d_opts,
                 key="pareto_d_list",
             )
-            # 任意の孔径を追加
-            _d_inp_col, _d_btn_col = st.columns([3, 1])
-            with _d_inp_col:
-                _d_new = st.number_input(
-                    "任意の孔径 [mm]",
-                    min_value=1.0, max_value=200.0,
-                    value=15.0, step=1.0,
-                    key="pareto_d_custom_input",
-                    label_visibility="collapsed",
-                )
-            with _d_btn_col:
-                if st.button("➕ 追加", key="pareto_d_add_btn"):
-                    _extras_d = st.session_state["pareto_extra_d"]
-                    if _d_new not in _extras_d and _d_new not in d_presets:
-                        _extras_d.append(_d_new)
-                        st.session_state["pareto_extra_d"] = sorted(_extras_d)
-                        st.rerun()
-            # カスタム追加済み値の表示・削除
-            _extras_d = st.session_state["pareto_extra_d"]
-            if _extras_d:
-                st.caption("追加した孔径:")
-                for _i, _val in enumerate(_extras_d):
-                    _ec1, _ec2 = st.columns([4, 1])
-                    _ec1.caption(f"　{_val:.0f} mm")
-                    if _ec2.button("×", key=f"pareto_d_del_{_i}"):
-                        _extras_d.pop(_i)
-                        st.session_state["pareto_extra_d"] = _extras_d
-                        st.rerun()
-            d_list = sorted(set(
-                [float(d) for d in d_selected] + _extras_d
-            )) or [0.0]
-            st.caption(f"候補: {[int(v) if v == int(v) else v for v in d_list]} mm")
+            _dc1, _dc2 = st.columns([3, 1])
+            _d_new = _dc1.number_input(
+                "追加 [mm]", min_value=1.0, max_value=200.0,
+                value=15.0, step=1.0, key="pareto_d_custom_input",
+            )
+            if _dc2.button("追加", key="pareto_d_add_btn", use_container_width=True):
+                _extras_d = st.session_state.get("pareto_extra_d", [])
+                if _d_new not in _extras_d and _d_new not in _d_presets:
+                    st.session_state["pareto_extra_d"] = sorted(_extras_d + [_d_new])
+                _cur = list(st.session_state.get("pareto_d_list", []))
+                if _d_new not in _cur:
+                    st.session_state["pareto_d_list"] = sorted(_cur + [_d_new])
+                st.rerun()
+            d_list = sorted(float(d) for d in d_selected) if d_selected else [0.0]
 
         with col_p:
             st.markdown("**📐 ピッチ p [mm]**")
-            p_presets = [30, 40, 50, 60, 80, 100]
+            _p_presets = [30, 40, 50, 60, 80, 100]
+            _p_opts = sorted(set(_p_presets + st.session_state.get("pareto_extra_p", [])))
             p_selected = st.multiselect(
-                "ピッチ候補を選択", p_presets,
-                default=[30, 40, 50, 60, 80, 100],
+                "ピッチ候補を選択",
+                _p_opts,
                 key="pareto_p_list",
             )
-            # 任意のピッチを追加
-            _p_inp_col, _p_btn_col = st.columns([3, 1])
-            with _p_inp_col:
-                _p_new = st.number_input(
-                    "任意のピッチ [mm]",
-                    min_value=1.0, max_value=500.0,
-                    value=45.0, step=1.0,
-                    key="pareto_p_custom_input",
-                    label_visibility="collapsed",
-                )
-            with _p_btn_col:
-                if st.button("➕ 追加", key="pareto_p_add_btn"):
-                    _extras_p = st.session_state["pareto_extra_p"]
-                    if _p_new not in _extras_p and _p_new not in p_presets:
-                        _extras_p.append(_p_new)
-                        st.session_state["pareto_extra_p"] = sorted(_extras_p)
-                        st.rerun()
-            # カスタム追加済み値の表示・削除
-            _extras_p = st.session_state["pareto_extra_p"]
-            if _extras_p:
-                st.caption("追加したピッチ:")
-                for _i, _val in enumerate(_extras_p):
-                    _pc1, _pc2 = st.columns([4, 1])
-                    _pc1.caption(f"　{_val:.0f} mm")
-                    if _pc2.button("×", key=f"pareto_p_del_{_i}"):
-                        _extras_p.pop(_i)
-                        st.session_state["pareto_extra_p"] = _extras_p
-                        st.rerun()
-            p_list = sorted(set(
-                [float(p) for p in p_selected] + _extras_p
-            )) or [50.0]
-            st.caption(f"候補: {[int(v) if v == int(v) else v for v in p_list]} mm")
+            _pc1, _pc2 = st.columns([3, 1])
+            _p_new = _pc1.number_input(
+                "追加 [mm]", min_value=1.0, max_value=500.0,
+                value=45.0, step=1.0, key="pareto_p_custom_input",
+            )
+            if _pc2.button("追加", key="pareto_p_add_btn", use_container_width=True):
+                _extras_p = st.session_state.get("pareto_extra_p", [])
+                if _p_new not in _extras_p and _p_new not in _p_presets:
+                    st.session_state["pareto_extra_p"] = sorted(_extras_p + [_p_new])
+                _cur = list(st.session_state.get("pareto_p_list", []))
+                if _p_new not in _cur:
+                    st.session_state["pareto_p_list"] = sorted(_cur + [_p_new])
+                st.rerun()
+            p_list = sorted(float(p) for p in p_selected) if p_selected else [50.0]
 
         with col_t:
             st.markdown("**📏 ラミナ構成**")
