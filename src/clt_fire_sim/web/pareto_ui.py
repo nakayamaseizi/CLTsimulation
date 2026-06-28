@@ -25,6 +25,12 @@ def render_pareto_tab() -> None:
         _generate_candidates,
     )
 
+    # カスタム追加値の初期化
+    if "pareto_extra_d" not in st.session_state:
+        st.session_state["pareto_extra_d"] = []
+    if "pareto_extra_p" not in st.session_state:
+        st.session_state["pareto_extra_p"] = []
+
     st.header("🎯 パレート最適化（孔パターン×ラミナ構成）")
     st.caption(
         "耐火性能（CLT面温度 最小化）と断熱性能（断熱抵抗R 最大化）を同時に満たす"
@@ -101,8 +107,38 @@ def render_pareto_tab() -> None:
                 default=[0, 6, 12, 18, 24, 30],
                 key="pareto_d_list",
             )
-            d_list = sorted(float(d) for d in d_selected) if d_selected else [0.0]
-            st.caption(f"候補: {d_list} mm")
+            # 任意の孔径を追加
+            _d_inp_col, _d_btn_col = st.columns([3, 1])
+            with _d_inp_col:
+                _d_new = st.number_input(
+                    "任意の孔径 [mm]",
+                    min_value=1.0, max_value=200.0,
+                    value=15.0, step=1.0,
+                    key="pareto_d_custom_input",
+                    label_visibility="collapsed",
+                )
+            with _d_btn_col:
+                if st.button("➕ 追加", key="pareto_d_add_btn"):
+                    _extras_d = st.session_state["pareto_extra_d"]
+                    if _d_new not in _extras_d and _d_new not in d_presets:
+                        _extras_d.append(_d_new)
+                        st.session_state["pareto_extra_d"] = sorted(_extras_d)
+                        st.rerun()
+            # カスタム追加済み値の表示・削除
+            _extras_d = st.session_state["pareto_extra_d"]
+            if _extras_d:
+                st.caption("追加した孔径:")
+                for _i, _val in enumerate(_extras_d):
+                    _ec1, _ec2 = st.columns([4, 1])
+                    _ec1.caption(f"　{_val:.0f} mm")
+                    if _ec2.button("×", key=f"pareto_d_del_{_i}"):
+                        _extras_d.pop(_i)
+                        st.session_state["pareto_extra_d"] = _extras_d
+                        st.rerun()
+            d_list = sorted(set(
+                [float(d) for d in d_selected] + _extras_d
+            )) or [0.0]
+            st.caption(f"候補: {[int(v) if v == int(v) else v for v in d_list]} mm")
 
         with col_p:
             st.markdown("**📐 ピッチ p [mm]**")
@@ -112,8 +148,38 @@ def render_pareto_tab() -> None:
                 default=[30, 40, 50, 60, 80, 100],
                 key="pareto_p_list",
             )
-            p_list = sorted(float(p) for p in p_selected) if p_selected else [50.0]
-            st.caption(f"候補: {p_list} mm")
+            # 任意のピッチを追加
+            _p_inp_col, _p_btn_col = st.columns([3, 1])
+            with _p_inp_col:
+                _p_new = st.number_input(
+                    "任意のピッチ [mm]",
+                    min_value=1.0, max_value=500.0,
+                    value=45.0, step=1.0,
+                    key="pareto_p_custom_input",
+                    label_visibility="collapsed",
+                )
+            with _p_btn_col:
+                if st.button("➕ 追加", key="pareto_p_add_btn"):
+                    _extras_p = st.session_state["pareto_extra_p"]
+                    if _p_new not in _extras_p and _p_new not in p_presets:
+                        _extras_p.append(_p_new)
+                        st.session_state["pareto_extra_p"] = sorted(_extras_p)
+                        st.rerun()
+            # カスタム追加済み値の表示・削除
+            _extras_p = st.session_state["pareto_extra_p"]
+            if _extras_p:
+                st.caption("追加したピッチ:")
+                for _i, _val in enumerate(_extras_p):
+                    _pc1, _pc2 = st.columns([4, 1])
+                    _pc1.caption(f"　{_val:.0f} mm")
+                    if _pc2.button("×", key=f"pareto_p_del_{_i}"):
+                        _extras_p.pop(_i)
+                        st.session_state["pareto_extra_p"] = _extras_p
+                        st.rerun()
+            p_list = sorted(set(
+                [float(p) for p in p_selected] + _extras_p
+            )) or [50.0]
+            st.caption(f"候補: {[int(v) if v == int(v) else v for v in p_list]} mm")
 
         with col_t:
             st.markdown("**📏 ラミナ構成**")
@@ -294,12 +360,36 @@ _D_COLORS: dict[float, str] = {
     6.0:  "#42A5F5",  # 水色
     12.0: "#1565C0",  # 青
     14.0: "#26C6DA",  # シアン
+    15.0: "#00BCD4",  # シアン系
     18.0: "#66BB6A",  # 緑
+    20.0: "#2E7D32",  # 濃緑
     24.0: "#FFA726",  # オレンジ
+    25.0: "#FF7043",  # 深オレンジ
     30.0: "#EF5350",  # 赤
     36.0: "#AB47BC",  # 紫
     40.0: "#8D6E63",  # ブラウン
+    45.0: "#F06292",  # ピンク
+    50.0: "#D4E157",  # 黄緑
 }
+
+# カスタム値用カラーパレット（登録外の孔径に順番に割り当て）
+_D_COLORS_EXTRA = [
+    "#00ACC1", "#43A047", "#FB8C00", "#E53935",
+    "#8E24AA", "#6D4C41", "#F48FB1", "#C0CA33",
+]
+
+
+def _get_d_color(d: float, all_d_values: list[float]) -> str:
+    """孔径に対応する色を返す。未登録の値はカスタムパレットから割り当て。"""
+    if d in _D_COLORS:
+        return _D_COLORS[d]
+    # 未登録値は all_d_values 内での未登録順位でカスタムパレットを割り当て
+    unknown = [v for v in sorted(all_d_values) if v not in _D_COLORS]
+    idx = unknown.index(d) if d in unknown else 0
+    return _D_EXTRA_COLORS[idx % len(_D_EXTRA_COLORS)]
+
+
+_D_EXTRA_COLORS = _D_COLORS_EXTRA
 
 # ラミナ厚 → Plotly マーカー形状
 _T_SYMBOLS: dict[float, str] = {12.0: "circle", 24.0: "square"}
@@ -341,9 +431,10 @@ def _render_pareto_results(state) -> None:
             st.divider()
             sel_d: dict[float, bool] = {}
             for d in unique_d:
-                label = f"d = {int(d)} mm" + ("  （無孔）" if d == 0 else "")
+                d_str = f"{int(d)}" if d == int(d) else f"{d}"
+                label = f"d = {d_str} mm" + ("  （無孔）" if d == 0 else "")
                 sel_d[d] = st.checkbox(
-                    label, value=all_d_on, key=f"filter_d_{int(d)}"
+                    label, value=all_d_on, key=f"filter_d_{d}"
                 )
 
         with col_fp:
@@ -352,8 +443,9 @@ def _render_pareto_results(state) -> None:
             st.divider()
             sel_p: dict[float, bool] = {}
             for p in unique_p:
+                p_str = f"{int(p)}" if p == int(p) else f"{p}"
                 sel_p[p] = st.checkbox(
-                    f"p = {int(p)} mm", value=all_p_on, key=f"filter_p_{int(p)}"
+                    f"p = {p_str} mm", value=all_p_on, key=f"filter_p_{p}"
                 )
 
         with col_ft:
@@ -415,8 +507,8 @@ def _render_pareto_results(state) -> None:
         if not d_cands:
             continue
 
-        color = _D_COLORS.get(d, "#888888")
-        d_label = f"d={int(d)}mm" + ("（無孔）" if d == 0 else "")
+        color = _get_d_color(d, unique_d)
+        d_label = f"d={int(d) if d == int(d) else d}mm" + ("（無孔）" if d == 0 else "")
 
         symbols = [_T_SYMBOLS.get(c.t_lam_mm, "circle") for c in d_cands]
         # 点のサイズ = 総厚に比例（最小6、最大16）
