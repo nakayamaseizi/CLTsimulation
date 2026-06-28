@@ -325,22 +325,23 @@ def make_surface_temp_chart(
     T_init: float = 20.0,
     insulation_limit: float = 100.0,
 ) -> Any:
-    """加熱面・構造層表面・非加熱面温度と ISO 834 ガス温度の時刻歴を Plotly で描画する。
+    """各層界面（加熱面→非加熱面）の温度時刻歴を Plotly で描画する。
 
     Parameters
     ----------
     result : dict
-        solve() の返り値。config キーがあれば構造層表面温度も描画する。
+        solve() の返り値。config と x_centers があれば全層界面を描画する。
     T_init : float
         初期温度 [°C]。
     insulation_limit : float
-        基準温度 [°C]。デフォルト 100°C。
+        遮熱基準温度 [°C]。デフォルト 100°C。
 
     Returns
     -------
     plotly.graph_objects.Figure
     """
     import plotly.graph_objects as go
+    import plotly.colors as pc
     from clt_fire_sim.boundary import iso834_temperature
 
     times_min = result["times"] / 60.0
@@ -348,51 +349,64 @@ def make_surface_temp_chart(
     x_centers = result.get("x_centers")
     mesh = result.get("mesh")
 
-    # 3D か 1D かを判定（mesh に ny 属性があれば 3D）
     is_3d = mesh is not None and hasattr(mesh, "ny")
-
     if is_3d:
         nx, ny, nz = mesh.nx, mesh.ny, mesh.nz
-        T_heated   = np.array([T_mat[ti].reshape(nx, ny, nz)[0,  :, :].mean() for ti in range(len(T_mat))])
-        T_unheated = np.array([T_mat[ti].reshape(nx, ny, nz)[-1, :, :].mean() for ti in range(len(T_mat))])
-    else:
-        T_heated   = T_mat[:, 0]
-        T_unheated = T_mat[:, -1]
 
-    # ── 構造層表面温度（config と x_centers があれば抽出）──────────────
-    T_struct: Any = None
-    struct_label = "構造層表面温度"
+    def _T_at_x_idx(ci: int) -> np.ndarray:
+        """セルインデックス ci の温度時刻歴を返す。"""
+        if is_3d:
+            return np.array([
+                T_mat[ti].reshape(nx, ny, nz)[ci, :, :].mean()
+                for ti in range(len(T_mat))
+            ])
+        return T_mat[:, ci]
+
+    # ── 各層界面の温度を収集 ─────────────────────────────────────────
     config = result.get("config")
+    traces: list[tuple[str, np.ndarray, str, float, str]] = []
+    # (label, T_array, color_hex, line_width, dash)
+
     if config is not None and x_centers is not None:
-        try:
-            spec = config.specimen
-            eval_cfg = config.evaluation
-            layer_idx = eval_cfg.structural_layer_index
-            n_layers = len(spec.layers)
-            if layer_idx < 0:
-                layer_idx = n_layers + layer_idx
-            layer_idx = int(np.clip(layer_idx, 0, n_layers - 1))
-            layer_starts_m = np.cumsum(
-                [0.0] + [la.thickness_mm / 1000.0 for la in spec.layers]
-            )
-            struct_x = layer_starts_m[layer_idx]
-            sci = int(np.argmin(np.abs(x_centers - struct_x)))
-            if is_3d:
-                T_struct = np.array([
-                    T_mat[ti].reshape(nx, ny, nz)[sci, :, :].mean()
-                    for ti in range(len(T_mat))
-                ])
+        spec = config.specimen
+        n_layers = len(spec.layers)
+        # 各層境界の x 座標 [m]（0 = 加熱面、total = 非加熱面）
+        bounds_m = np.cumsum(
+            [0.0] + [la.thickness_mm / 1000.0 for la in spec.layers]
+        )
+        n_bounds = len(bounds_m)  # = n_layers + 1
+
+        # 加熱面(赤)→非加熱面(青)のカラーグラデーション
+        svals = np.linspace(1.0, 0.0, n_bounds)
+        colors = pc.sample_colorscale("Turbo", svals.tolist())
+
+        for i, x_b in enumerate(bounds_m):
+            if i == 0:
+                label = "加熱面（第1層 表面）"
+                ci = 0
+                width, dash = 2.5, "solid"
+            elif i == n_layers:
+                label = f"非加熱面（第{n_layers}層 裏面）"
+                ci = len(x_centers) - 1
+                width, dash = 2.5, "solid"
             else:
-                T_struct = T_mat[:, sci]
-            struct_label = f"構造層表面温度（第{layer_idx + 1}層 火側面）"
-        except Exception:
-            T_struct = None
+                label = f"第{i}層 裏面 / 第{i+1}層 表面"
+                ci = int(np.argmin(np.abs(x_centers - x_b)))
+                width, dash = 1.8, "dot"
+            traces.append((label, _T_at_x_idx(ci), colors[i], width, dash))
+    else:
+        # config がない場合のフォールバック（加熱面・非加熱面のみ）
+        traces = [
+            ("加熱面", _T_at_x_idx(0),                    "firebrick",  2.5, "solid"),
+            ("非加熱面", _T_at_x_idx(len(x_centers) - 1), "steelblue",  2.5, "solid"),
+        ]
 
     # ISO 834 ガス温度
     T_iso = np.array([iso834_temperature(t) for t in times_min])
 
     fig = go.Figure()
 
+    # 遮熱基準線
     fig.add_hline(
         y=insulation_limit,
         line_dash="dot",
@@ -411,45 +425,32 @@ def make_surface_temp_chart(
         hovertemplate="時刻: %{x:.1f}分<br>ISO 834: %{y:.0f}°C<extra></extra>",
     ))
 
-    # ① 加熱面温度
-    fig.add_trace(go.Scatter(
-        x=times_min.tolist(),
-        y=T_heated.tolist(),
-        mode="lines",
-        line=dict(color="firebrick", width=2.5),
-        name="① 加熱面温度",
-        hovertemplate="時刻: %{x:.1f}分<br>加熱面: %{y:.0f}°C<extra></extra>",
-    ))
-
-    # ② 構造層表面温度
-    if T_struct is not None:
+    # 各層界面温度
+    for label, T_b, color, width, dash in traces:
         fig.add_trace(go.Scatter(
             x=times_min.tolist(),
-            y=np.asarray(T_struct).tolist(),
+            y=np.asarray(T_b).tolist(),
             mode="lines",
-            line=dict(color="darkorange", width=2.5, dash="dot"),
-            name=f"② {struct_label}",
-            hovertemplate=f"時刻: %{{x:.1f}}分<br>{struct_label}: %{{y:.1f}}°C<extra></extra>",
+            line=dict(color=color, width=width, dash=dash),
+            name=label,
+            hovertemplate=f"時刻: %{{x:.1f}}分<br>{label}: %{{y:.1f}}°C<extra></extra>",
         ))
 
-    # ③ 非加熱面温度
-    fig.add_trace(go.Scatter(
-        x=times_min.tolist(),
-        y=T_unheated.tolist(),
-        mode="lines",
-        line=dict(color="steelblue", width=2.5),
-        name="③ 非加熱面温度",
-        hovertemplate="時刻: %{x:.1f}分<br>非加熱面: %{y:.1f}°C<extra></extra>",
-    ))
-
     fig.update_layout(
-        title="温度時刻歴（加熱面 / 構造層表面 / 非加熱面）",
+        title="温度時刻歴（各層表面）",
         xaxis_title="時間 [分]",
         yaxis_title="温度 [°C]",
         xaxis=dict(range=[0, float(times_min.max())]),
         yaxis=dict(range=[0, None]),
-        legend=dict(x=0.01, y=0.99, xanchor="left", yanchor="top"),
-        height=420,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+        ),
+        margin=dict(t=120),
+        height=520,
         hovermode="x unified",
     )
 
