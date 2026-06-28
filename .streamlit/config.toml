@@ -1,5 +1,7 @@
-﻿[server]
+[server]
 headless = true
+address = "localhost"
+fileWatcherType = "poll"
 
 [browser]
 gatherUsageStats = false
