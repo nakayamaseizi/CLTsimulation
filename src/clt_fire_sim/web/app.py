@@ -551,6 +551,9 @@ with tab_3d:
             "📈 表面温度",
         ])
 
+        # 結果ごとにユニークなキーを生成（グラフ更新の確実化）
+        _ck = _result3d.get("run_id", str(id(_result3d)))
+
         with vtab_anim:
             st.caption(
                 "スライダーで時刻を選択できます。"
@@ -565,7 +568,8 @@ with tab_3d:
                 fig_anim = viz_plotly.make_temp_profile_animation(
                     _result3d, n_frames=_n_frames
                 )
-                st.plotly_chart(fig_anim, width="stretch")
+                st.plotly_chart(fig_anim, use_container_width=True,
+                                key=f"anim_{_ck}_{_n_frames}")
             except Exception as _e:
                 st.error(f"プロファイルアニメーションの生成に失敗しました: {_e}")
 
@@ -576,7 +580,8 @@ with tab_3d:
             )
             try:
                 fig_hm = viz_plotly.make_temp_heatmap(_result3d)
-                st.plotly_chart(fig_hm, width="stretch")
+                st.plotly_chart(fig_hm, use_container_width=True,
+                                key=f"hm_{_ck}")
             except Exception as _e:
                 st.error(f"ヒートマップの生成に失敗しました: {_e}")
 
@@ -585,7 +590,8 @@ with tab_3d:
                 import numpy as _np
                 import pandas as _pd
                 fig_char = viz_plotly.make_charring_chart(_result3d)
-                st.plotly_chart(fig_char, width="stretch")
+                st.plotly_chart(fig_char, use_container_width=True,
+                                key=f"char_{_ck}")
                 _t_char = _result3d["times"] / 60.0
                 _char_mm = _result3d["char_depths"] * 1000.0
                 _df_char = _pd.DataFrame({"時刻[分]": _t_char, "炭化深さ[mm]": _char_mm})
@@ -605,7 +611,8 @@ with tab_3d:
                 fig_surf = viz_plotly.make_surface_temp_chart(
                     _result3d, T_init=_T_init3d
                 )
-                st.plotly_chart(fig_surf, width="stretch")
+                st.plotly_chart(fig_surf, use_container_width=True,
+                                key=f"surf_{_ck}")
                 _t_surf = _result3d["times"] / 60.0
                 _T_mat = _result3d["temperatures"]
                 _mesh3d = _result3d.get("mesh")

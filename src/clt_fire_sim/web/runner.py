@@ -395,6 +395,7 @@ def _run_simulation_thread(
         # ---- 性能評価 ----
         result["evaluation"] = evaluate_performance(result, config=config)
         result["config"] = config
+        result["run_id"] = run_id
         if mode == "3D":
             result["mesh"] = mesh
 
