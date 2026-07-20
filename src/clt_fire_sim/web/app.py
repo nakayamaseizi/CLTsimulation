@@ -401,37 +401,37 @@ with tab_result:
                 _AIR_K_RT = 0.026
                 _RSI_APP, _RSE_APP = 0.13, 0.04
 
+                import numpy as _np_th
+                from clt_fire_sim.runner import _build_layer_properties as _blp_rt
+
+                _T_RT = _np_th.array([20.0])
+
                 def _lam_rt(lyr) -> float:
-                    """LayerConfig から室温熱伝導率 [W/mK] を返す。"""
-                    mt = getattr(lyr, "material_type", "wood")
-                    if mt == "custom" and getattr(lyr, "k_W_mK", None) is not None:
+                    """LayerConfig から室温 (20°C) 熱伝導率 [W/mK] を返す。
+
+                    シミュレーションで実際に使う物性値オブジェクトを
+                    そのまま 20°C で評価するため、表示値と計算値が必ず一致する。
+                    （旧実装は void_fraction を直接読んでいたが、スリット層は
+                    void_fraction=0 のまま SlittedWoodProperties が内部で W/P を
+                    計算する設計のため、スリットと充填材が無視されていた）
+                    """
+                    try:
+                        return float(_blp_rt(lyr).get_k_array(_T_RT)[0])
+                    except Exception:
+                        pass
+                    # フォールバック: 物性値オブジェクトを作れない場合（custom で k 未設定等）
+                    if getattr(lyr, "k_W_mK", None) is not None:
                         return float(lyr.k_W_mK)
                     db = _MDB.get(getattr(lyr, "material", "sugi"), {})
-                    pt = db.get("properties_type", "wood")
-                    if pt == "constant":
-                        bk = float(db.get("k", 0.12))
-                    elif pt == "charred_cork":
-                        bk = float(db.get("k", 0.041))
-                    else:
-                        bk = float(db.get("k_measured", 0.12))
-                    if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
-                        vf = float(getattr(lyr, "void_fraction", 0.0))
-                        # 孔・スリット充填材（"air" 以外は充填材の室温λを使用）
-                        _fill = getattr(lyr, "hole_filler", "air")
-                        if _fill and _fill != "air":
-                            _fdb = _MDB.get(_fill, {})
-                            if _fdb.get("density_dependent_k"):
-                                # ばら材: 充填密度から室温λを算出
-                                from clt_fire_sim.materials import loose_fill_k_rt
-                                _fd = (getattr(lyr, "hole_filler_density_kg_m3", None)
-                                       or _fdb.get("rho_0", 150.0))
-                                k_void = float(loose_fill_k_rt(_fd))
-                            else:
-                                k_void = float(_fdb.get("k_measured", _fdb.get("k", _AIR_K_RT)))
-                        else:
-                            k_void = _AIR_K_RT
-                        return (1.0 - vf) * bk + vf * k_void
-                    return bk
+                    return float(db.get("k_measured", db.get("k", 0.12)))
+
+                def _vf_area(lyr) -> float:
+                    """表示用の断面空洞率 φ_A を返す（スリット層は W/P から算出）。"""
+                    if getattr(lyr, "material_type", "wood") == "slitted_wood":
+                        _w = float(getattr(lyr, "slit_width_mm", 15.0))
+                        _p = max(float(getattr(lyr, "slit_pitch_mm", 30.0)), _w + 1.0)
+                        return min(_w / _p, 0.95)
+                    return float(getattr(lyr, "void_fraction", 0.0))
 
                 th_rows = []
                 r_sum = 0.0
@@ -445,8 +445,13 @@ with tab_result:
                     mat_disp = getattr(lyr, "custom_name", "") or lyr.material
                     mt = getattr(lyr, "material_type", "wood")
                     if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
-                        vf_disp = getattr(lyr, "void_fraction", 0.0)
-                        mat_disp += f" (vf={vf_disp:.3f})"
+                        _tag = "スリット" if mt == "slitted_wood" else "有孔"
+                        mat_disp += f" [{_tag} φ_A={_vf_area(lyr):.3f}"
+                        _fl = getattr(lyr, "hole_filler", "air")
+                        if _fl and _fl != "air":
+                            _fl_name = _MDB.get(_fl, {}).get("name", _fl)
+                            mat_disp += f", 充填={_fl_name.split('（')[0]}"
+                        mat_disp += "]"
                     th_rows.append({
                         "層": i + 1,
                         "材料": mat_disp,
