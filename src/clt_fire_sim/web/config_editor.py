@@ -154,6 +154,44 @@ HOLE_FILLER_OPTIONS: dict[str, str] = {
 }
 
 
+def void_fraction_3d(vf_area: float, depth_mm: float, thickness_mm: float) -> float:
+    """加工深さを考慮した体積空洞率（3D）を返す。
+
+    断面空洞率 φ_A（加工面を正面から見た面積比）に対し、
+    加工が板厚を貫通しない場合は深さ比 (depth/thickness) の分だけ
+    実際の空洞体積が小さくなる。
+
+        φ_V = φ_A × min(depth / thickness, 1.0)
+
+    【導出（有孔加工）】
+        孔1本の体積     = π(d/2)² × H
+        単位セル体積     = P² × t
+        φ_V = π(d/2)²·H / (P²·t) = φ_A × (H/t)
+
+    【導出（スリット加工）】
+        スリット体積/長さ = W × D
+        単位セル体積/長さ = P × t
+        φ_V = W·D / (P·t) = φ_A × (D/t)
+
+    Parameters
+    ----------
+    vf_area : float
+        断面空洞率 φ_A（0〜1）。
+    depth_mm : float
+        加工深さ（孔深さ H またはスリット深さ D）[mm]。
+    thickness_mm : float
+        層の板厚 t [mm]。
+
+    Returns
+    -------
+    float
+        体積空洞率 φ_V（0〜1）。貫通加工（depth ≥ thickness）では φ_A に一致する。
+    """
+    if thickness_mm <= 0:
+        return 0.0
+    return float(vf_area) * min(float(depth_mm) / float(thickness_mm), 1.0)
+
+
 def init_session_state() -> None:
     """セッション状態を初期化する。
 
@@ -586,9 +624,15 @@ def _render_layer_editor() -> None:
                 _d_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 10.0)))
                 _p_v = float(st.session_state.get(f"pitch_{lid}", layer.get("hole_pitch_mm", 30.0)))
                 _vf_v = min(_math.pi * (_d_v / 2) ** 2 / max(_p_v, _d_v + 0.1) ** 2, 0.95)
+                _rho_v = float(st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"]))
+                # 簡易モデルは貫通孔を仮定（板厚方向に一様）→ φ_V = φ_A
                 st.caption(
-                    f"開孔率 φ = π(d/2)²/P² ≈ {_vf_v*100:.1f}%　"
-                    f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1 - _vf_v):.0f} kg/m³"
+                    f"**断面空洞率 φ_A** = π(d/2)²/P² ≈ **{_vf_v*100:.1f}%**　"
+                    f"／　**体積空洞率 φ_V** ≈ **{_vf_v*100:.1f}%**"
+                )
+                st.caption(
+                    f"↳ 貫通孔を仮定するモデルのため φ_V = φ_A。"
+                    f"　等価密度 ≈ {_rho_v * (1 - _vf_v):.0f} kg/m³"
                 )
                 _render_filler_select()
 
@@ -627,10 +671,24 @@ def _render_layer_editor() -> None:
                     phi_v = float(st.session_state.get(f"phi_{lid}", layer.get("hole_diameter_mm", 10.0)))
                     p2_v = float(st.session_state.get(f"pitch_{lid}", layer.get("hole_pitch_mm", 30.0)))
                     h_v = float(st.session_state.get(f"hole_h_{lid}", layer.get("hole_depth_mm", 20.0)))
+                    t_v = float(st.session_state.get(f"thick_{lid}", layer["thickness_mm"]))
+                    rho_v = float(st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"]))
                     vf_adv = min(_math.pi * (phi_v / 2) ** 2 / max(p2_v, phi_v + 0.1) ** 2, 0.95)
+                    vf3d = void_fraction_3d(vf_adv, h_v, t_v)
                     ra1 = _ra1_ikehata(phi_v, h_v)
                     st.caption(
-                        f"開孔率 φ ≈ {vf_adv*100:.1f}%　"
+                        f"**断面空洞率 φ_A** ≈ **{vf_adv*100:.1f}%**　"
+                        f"／　**体積空洞率 φ_V** ≈ **{vf3d*100:.1f}%**"
+                    )
+                    if h_v >= t_v:
+                        _depth_note = f"貫通孔（孔深 {h_v:.0f} ≥ 板厚 {t_v:.0f}mm）→ φ_V = φ_A"
+                    else:
+                        _depth_note = (
+                            f"φ_V = φ_A × H/t = {vf_adv*100:.1f}% × {h_v:.0f}/{t_v:.0f}"
+                        )
+                    st.caption(
+                        f"↳ {_depth_note}　"
+                        f"等価密度 ≈ {rho_v * (1 - vf3d):.0f} kg/m³　"
                         f"📐 池畑式 Ra1 = {ra1*1e4:.2f} × 10⁻⁴ m²K/W"
                     )
                 except Exception:
@@ -669,11 +727,19 @@ def _render_layer_editor() -> None:
                     sw_v = float(st.session_state.get(f"sw_{lid}", layer.get("slit_width_mm", 15.0)))
                     sd_v = float(st.session_state.get(f"sd_{lid}", layer.get("slit_depth_mm", 3.0)))
                     sp_v = float(st.session_state.get(f"sp_{lid}", layer.get("slit_pitch_mm", 30.0)))
+                    st_v = float(st.session_state.get(f"thick_{lid}", layer["thickness_mm"]))
+                    srho_v = float(st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"]))
                     vf_slit = min(sw_v / max(sp_v, sw_v + 1.0), 0.95)
+                    vf3d_slit = void_fraction_3d(vf_slit, sd_v, st_v)
                     d_eff = min(sd_v, 9.0)
                     rs_approx = d_eff * 1e-3 / 0.026 * 0.6
                     st.caption(
-                        f"断面空洞率 φ ≈ {vf_slit*100:.0f}%、"
+                        f"**断面空洞率 φ_A** = W/P ≈ **{vf_slit*100:.1f}%**　"
+                        f"／　**体積空洞率 φ_V** ≈ **{vf3d_slit*100:.1f}%**"
+                    )
+                    st.caption(
+                        f"↳ φ_V = φ_A × D/t = {vf_slit*100:.1f}% × {sd_v:.0f}/{st_v:.0f}　"
+                        f"等価密度 ≈ {srho_v * (1 - vf3d_slit):.0f} kg/m³　"
                         f"スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W"
                     )
                 except Exception:
