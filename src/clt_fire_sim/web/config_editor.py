@@ -745,10 +745,13 @@ def _render_layer_editor() -> None:
                     sp_v = float(st.session_state.get(f"sp_{lid}", layer.get("slit_pitch_mm", 30.0)))
                     st_v = float(st.session_state.get(f"thick_{lid}", layer["thickness_mm"]))
                     srho_v = float(st.session_state.get(f"rho_{lid}", layer["rho_0_kg_m3"]))
+                    from clt_fire_sim.materials import (
+                        iso6946_air_gap_resistance as _iso_r,
+                        _SLIT_CONV_ONSET_MM, _SLIT_VALIDATED_MAX_MM,
+                    )
                     vf_slit = min(sw_v / max(sp_v, sw_v + 1.0), 0.95)
                     vf3d_slit = void_fraction_3d(vf_slit, sd_v, st_v)
-                    d_eff = min(sd_v, 9.0)
-                    rs_approx = d_eff * 1e-3 / 0.026 * 0.6
+                    rs_approx = _iso_r(sd_v, plateau_mm=_SLIT_CONV_ONSET_MM)
                     st.caption(
                         f"**断面空洞率 φ_A** = W/P ≈ **{vf_slit*100:.1f}%**　"
                         f"／　**体積空洞率 φ_V** ≈ **{vf3d_slit*100:.1f}%**"
@@ -760,14 +763,26 @@ def _render_layer_editor() -> None:
                     from clt_fire_sim.materials import void_k_at_temperature as _vkt
                     _skv20 = (sd_v * 1e-3 / rs_approx) if rs_approx > 1e-12 else 0.026
                     _skv500 = float(_vkt(_skv20, 500.0))
-                    _clamp = "（対流クランプ D_eff=9mm 適用）" if sd_v > 9.0 else ""
+                    _clamp = (
+                        f"（対流により {_SLIT_CONV_ONSET_MM:.0f}mm で頭打ち）"
+                        if sd_v > _SLIT_CONV_ONSET_MM else ""
+                    )
                     st.caption(
-                        f"📐 スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W{_clamp}"
+                        f"📐 スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W"
+                        f"（ISO 6946 密閉空気層）{_clamp}"
                     )
                     st.caption(
                         f"🔥 スリットの等価λ: 室温 **{_skv20:.4f}** → 500°C **{_skv500:.4f}** W/mK"
                         f"（輻射の T³ 則で外挿）"
                     )
+                    if sd_v > _SLIT_VALIDATED_MAX_MM:
+                        st.warning(
+                            f"⚠️ スリット深さ {sd_v:.1f}mm は実測の裏付け範囲"
+                            f"（D ≤ {_SLIT_VALIDATED_MAX_MM:.0f}mm）を超えています。\n\n"
+                            "池畑(2021) の D=21mm 実測では対流により熱抵抗が "
+                            "D=3mm を下回りますが、本モデルは頭打ちまでしか再現しません。"
+                            "**断熱性能を過大評価（危険側）**する恐れがあります。"
+                        )
                 except Exception:
                     pass
                 _render_filler_select()
