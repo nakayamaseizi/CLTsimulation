@@ -211,6 +211,7 @@ class FVM3DSolver:
         T_init: float = 20.0,
         void_mask: np.ndarray | None = None,
         burn_through: bool = False,
+        void_props: Any = None,
     ) -> None:
         """
         Parameters
@@ -227,6 +228,12 @@ class FVM3DSolver:
             孔の内壁を直接加熱する（ISO 834 相当の温度が孔全体に作用）。
             このモードでは void セルを内部熱源として扱うことで
             「孔を通じた次層への直接加熱」を再現する。
+        void_props : object or None
+            空洞セルの充填材物性値オブジェクト
+            （get_k_array / get_rho_cp_array を持つもの。例: KuntanProperties）。
+            指定時は空洞セルに空気の代わりに充填材の温度依存物性値を適用する。
+            充填孔は火炎ガスが侵入できないため burn_through とは併用不可
+            （両方指定時は void_props を優先）。
         """
         self.mesh = mesh
         self.props = props
@@ -235,7 +242,9 @@ class FVM3DSolver:
         self.T_right = T_right
         self.T = np.full(mesh.n_cells, float(T_init))
         self.t = 0.0
-        self.burn_through = bool(burn_through)
+        self.void_props = void_props
+        # 充填材があれば燃え抜けは物理的に起こらない
+        self.burn_through = bool(burn_through) and void_props is None
         # void_mask を 1D フラットインデックスで保持
         if void_mask is not None:
             self._void_flat = void_mask.ravel().astype(bool)
@@ -288,7 +297,12 @@ class FVM3DSolver:
         if self._void_flat is not None:
             k_arr = k_arr.copy()
             rho_cp = rho_cp.copy()
-            if self.burn_through:
+            if self.void_props is not None:
+                # 充填モード: 孔・スリット = 充填材（くん炭・籾殻など）
+                T_void = T_iter[self._void_flat]
+                k_arr[self._void_flat] = self.void_props.get_k_array(T_void)
+                rho_cp[self._void_flat] = self.void_props.get_rho_cp_array(T_void)
+            elif self.burn_through:
                 # 燃え抜けモード: 孔内部は高有効熱伝達率（輻射＋対流を模擬）
                 # 火炎ガスが孔に侵入し、孔内壁を強制加熱する効果を
                 # 孔セル内の高い有効熱伝導率で近似する

@@ -4,13 +4,16 @@ pareto_optimizer.py
 有孔ラミナ保護層のパレート最適化。
 
 【設計変数】
-  d_mm   : 孔径 [mm]（同一試験体内は一定）
-  p_mm   : 孔ピッチ（中心間距離）[mm]（同一試験体内は一定）
-  t_lam  : ラミナ厚さ [mm]（12mm or 24mm）
-  n_lam  : ラミナ枚数（1〜8、総厚 ≤ 96mm）
+  d_mm    : 孔径 [mm]（同一試験体内は一定）
+  N_holes : 孔数（試験体面積 W×H 内の総孔数）
+  W_mm    : 試験体幅 [mm]
+  H_mm    : 試験体高さ [mm]
+  t_lam   : ラミナ厚さ [mm]（12mm or 24mm）
+  n_lam   : ラミナ枚数（1〜8、総厚 ≤ 96mm）
 
 【導出量】
-  vf     : 空洞率 = π*(d/2)² / p²（円孔・正方形配置）
+  vf     : 開口率 = N × π × d² / (4 × W × H)
+  p_eff  : 等価ピッチ = sqrt(W×H/N) [mm]（3D unit cell サイズ）
   total  : 保護層総厚 = t_lam * n_lam [mm]
 
 【目的関数（2目的）】
@@ -22,7 +25,7 @@ pareto_optimizer.py
   それ以外                : 並列混合則（PerforatedWoodProperties）
 
 【アルゴリズム】
-  1. (d, p, t_lam, n_lam) の全有効組み合わせを生成
+  1. (d, N, t_lam, n_lam) の全有効組み合わせを生成
   2. (vf, total_mm) が同一の組み合わせは1回だけシミュレーション（重複除去）
   3. 各点で F1（シミュレーション）・F2（解析式）を評価
   4. パレートフロント（非支配解集合）を特定
@@ -57,7 +60,9 @@ _RSE: float = 0.04  # 加熱面側表面熱抵抗 [m²K/W]
 class ParetoCandidate:
     """1つの設計変数の組み合わせ"""
     d_mm: float
-    p_mm: float
+    N_holes: int                     # 孔数
+    W_mm: float                      # 試験体幅 [mm]
+    H_mm: float                      # 試験体高さ [mm]
     t_lam_mm: float
     n_lam: int
     t_face_mm: float = 0.0           # 表側（火側）無孔パネル厚 [mm]
@@ -72,8 +77,15 @@ class ParetoCandidate:
     error: str = ""
 
     def __post_init__(self) -> None:
-        self.vf = _compute_vf(self.d_mm, self.p_mm)
+        self.vf = _compute_vf(self.d_mm, self.N_holes, self.W_mm, self.H_mm)
         self.total_mm = self.t_lam_mm * self.n_lam
+
+    @property
+    def p_eff_mm(self) -> float:
+        """等価ピッチ（3D unit cell サイズ）= sqrt(W×H/N) [mm]"""
+        if self.N_holes <= 0 or self.d_mm <= 0:
+            return max(self.W_mm, self.H_mm)
+        return float(np.sqrt(self.W_mm * self.H_mm / self.N_holes))
 
     @property
     def r_key(self) -> tuple:
@@ -176,7 +188,9 @@ def stop_pareto() -> None:
 
 def start_pareto_optimization(
     d_list: list[float],
-    p_list: list[float],
+    N_list: list[int],
+    W_mm: float,
+    H_mm: float,
     t_lam_list: list[float],
     n_lam_max: int = 8,
     base_mat: str = "sugi",
@@ -194,8 +208,12 @@ def start_pareto_optimization(
     ----------
     d_list : list[float]
         孔径の候補リスト [mm]（0 = 無孔）
-    p_list : list[float]
-        孔ピッチの候補リスト [mm]
+    N_list : list[int]
+        孔数の候補リスト
+    W_mm : float
+        試験体幅 [mm]
+    H_mm : float
+        試験体高さ [mm]
     t_lam_list : list[float]
         ラミナ厚さの候補リスト [mm]（例: [12.0, 24.0]）
     n_lam_max : int
@@ -224,7 +242,7 @@ def start_pareto_optimization(
             return
 
         candidates = _generate_candidates(
-            d_list, p_list, t_lam_list, n_lam_max, t_face_list, face_mat
+            d_list, N_list, W_mm, H_mm, t_lam_list, n_lam_max, t_face_list, face_mat
         )
         _stop_event.clear()
         _state = ParetoOptState(
@@ -247,16 +265,22 @@ def start_pareto_optimization(
 # 設計空間の生成
 # ---------------------------------------------------------------------------
 
-def _compute_vf(d_mm: float, p_mm: float) -> float:
-    """円孔・正方形配置の空洞率を計算する。"""
-    if d_mm <= 0 or p_mm <= 0:
+def _compute_vf(d_mm: float, N: int, W_mm: float, H_mm: float) -> float:
+    """孔径 d、孔数 N、試験体面積 W×H に基づく開口率を計算する。
+
+    開口率[%] = N × π × d² / (4 × W × H) × 100
+    戻り値は割合（0〜1）。
+    """
+    if d_mm <= 0 or N <= 0 or W_mm <= 0 or H_mm <= 0:
         return 0.0
-    return np.pi * (d_mm / 2.0) ** 2 / p_mm ** 2
+    return (N * np.pi * d_mm ** 2) / (4.0 * W_mm * H_mm)
 
 
 def _generate_candidates(
     d_list: list[float],
-    p_list: list[float],
+    N_list: list[int],
+    W_mm: float,
+    H_mm: float,
     t_lam_list: list[float],
     n_lam_max: int,
     t_face_list: list[float] | None = None,
@@ -266,11 +290,12 @@ def _generate_candidates(
 
     Notes
     -----
-    - d=0（無孔）の場合、ピッチに依らず同一結果になるため
-      各 (t_lam, n_lam, t_face) につき代表1点（p=p_list[0]）だけ生成する。
-    - 同じ (vf, total_mm, t_face_mm) を与える複数の (d, p) 組み合わせは
+    - d=0（無孔）の場合、孔数に依らず同一結果になるため
+      各 (t_lam, n_lam, t_face) につき代表1点（N=0）だけ生成する。
+    - 同じ (vf, total_mm, t_face_mm) を与える複数の (d, N) 組み合わせは
       シミュレーションキャッシュで重複除去するが、候補としてはそれぞれ残す
       （異なる物理設計として別の行に表示するため）。
+    - 孔径 d が等価ピッチ p_eff = sqrt(W×H/N) 以上になる組み合わせは除外。
     - t_face_list: 表側（火側）無孔パネル厚候補 [mm]。0 = 無し。
     """
     if t_face_list is None:
@@ -279,7 +304,6 @@ def _generate_candidates(
     max_total_mm = 96.0  # 有孔ラミナ層の最大総厚（表面パネルは含まない）
     candidates: list[ParetoCandidate] = []
     solid_keys_seen: set = set()
-    min_p = sorted(p_list)[0] if p_list else 30.0
 
     for t_face in sorted(t_face_list):
         for t_lam in sorted(t_lam_list):
@@ -290,22 +314,26 @@ def _generate_candidates(
                 if solid_key not in solid_keys_seen and 0.0 in d_list:
                     solid_keys_seen.add(solid_key)
                     candidates.append(ParetoCandidate(
-                        d_mm=0.0, p_mm=min_p, t_lam_mm=t_lam,
-                        n_lam=n_lam, t_face_mm=t_face, face_mat=face_mat,
+                        d_mm=0.0, N_holes=0, W_mm=W_mm, H_mm=H_mm,
+                        t_lam_mm=t_lam, n_lam=n_lam,
+                        t_face_mm=t_face, face_mat=face_mat,
                     ))
 
-                for p in sorted(p_list):
+                for N in sorted(N_list):
                     for d in sorted(d_list):
-                        if d <= 0:
+                        if d <= 0 or N <= 0:
                             continue
-                        if d >= p:
+                        # 孔が等価ピッチより大きければ物理的に不正
+                        p_eff = float(np.sqrt(W_mm * H_mm / N))
+                        if d >= p_eff:
                             continue
-                        if _compute_vf(d, p) > 0.79:
+                        if _compute_vf(d, N, W_mm, H_mm) > 0.79:
                             continue
 
                         candidates.append(ParetoCandidate(
-                            d_mm=d, p_mm=p, t_lam_mm=t_lam,
-                            n_lam=n_lam, t_face_mm=t_face, face_mat=face_mat,
+                            d_mm=d, N_holes=N, W_mm=W_mm, H_mm=H_mm,
+                            t_lam_mm=t_lam, n_lam=n_lam,
+                            t_face_mm=t_face, face_mat=face_mat,
                         ))
 
     return candidates
@@ -336,7 +364,7 @@ def _run_pareto_thread(
         try:
             # キャッシュキー（表面パネル材料も含む）
             if use_3d:
-                key = (round(c.d_mm, 2), round(c.p_mm, 2),
+                key = (round(c.d_mm, 2), round(c.p_eff_mm, 2),
                        float(c.total_mm), float(c.t_face_mm), c.face_mat)
             else:
                 key = c.r_key  # (vf_rounded, total_mm, t_face_mm, face_mat)
@@ -462,7 +490,7 @@ def _run_sim_one_3d(
     protect_m = c.protection_thickness_m  # 有孔ラミナ層 [m]
     face_m = c.t_face_mm / 1000.0         # 表面パネル [m]
     clt_layer_m = _CLT_LAYER_MM / 1000.0
-    p_m = c.p_mm / 1000.0
+    p_eff_m = c.p_eff_mm / 1000.0  # 等価ピッチ = sqrt(W×H/N) [m]
 
     # レイヤー構成（表面パネルあり / なし）
     if face_m > 0:
@@ -474,11 +502,11 @@ def _run_sim_one_3d(
         n_face_x = 0
         n_perf_x_start = 0
 
-    # 3Dメッシュ生成（ユニットセル = p×p mm のYZ断面）
+    # 3Dメッシュ生成（ユニットセル = p_eff × p_eff mm のYZ断面）
     mesh = make_clt_mesh_3d(
         layer_thicknesses=layer_thicknesses,
-        specimen_width=p_m,
-        specimen_height=p_m,
+        specimen_width=p_eff_m,
+        specimen_height=p_eff_m,
         n_cells_per_layer=n_cells_per_layer,
         mesh_ratio=1.05,
         n_cells_y=n_cells_xy,
@@ -492,13 +520,13 @@ def _run_sim_one_3d(
     if c.d_mm > 0.0:
         void_mask = np.zeros((nx, ny, nz), dtype=bool)
         r_sq = (c.d_mm / 2.0) ** 2
-        half_p = c.p_mm / 2.0
+        half_p = c.p_eff_mm / 2.0
         perf_start = n_perf_x_start
         perf_end = perf_start + n_cells_per_layer
         for j in range(ny):
-            y_c = (j + 0.5) / ny * c.p_mm
+            y_c = (j + 0.5) / ny * c.p_eff_mm
             for k in range(nz):
-                z_c = (k + 0.5) / nz * c.p_mm
+                z_c = (k + 0.5) / nz * c.p_eff_mm
                 if (y_c - half_p) ** 2 + (z_c - half_p) ** 2 <= r_sq:
                     void_mask[perf_start:perf_end, j, k] = True
 
@@ -577,6 +605,6 @@ def get_default_d_list() -> list[float]:
     return [0.0, 6.0, 10.0, 14.0, 18.0, 24.0, 30.0]
 
 
-def get_default_p_list() -> list[float]:
-    """デフォルトのピッチ候補リスト [mm]。"""
-    return [30.0, 40.0, 50.0, 60.0, 80.0, 100.0]
+def get_default_N_list() -> list[int]:
+    """デフォルトの孔数候補リスト。"""
+    return [1, 4, 9, 16, 25, 36]

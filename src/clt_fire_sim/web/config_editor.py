@@ -71,6 +71,8 @@ def _all_material_labels() -> dict[str, str]:
         "glass_wool":      "⬜",   # 無機断熱材
         "fr_sugi":         "🔴",   # 不燃処理スギ（燃え止まり層用）
         "insulation_board":"🟤",   # 木質繊維断熱板
+        "momigara":        "🌾",   # 籾殻（ばら充填）
+        "kuntan":          "⬛",   # 籾殻くん炭（炭化籾殻）
     }
     labels = {}
     for k, v in MATERIAL_DB.items():
@@ -115,6 +117,8 @@ def _make_layer(
     slit_width_mm: float = 15.0,
     slit_depth_mm: float = 3.0,
     slit_pitch_mm: float = 30.0,
+    k_char_factor: float = 1.0,
+    hole_filler: str = "air",
 ) -> dict[str, Any]:
     """新しいレイヤー辞書を生成する（UUID 付き）。"""
     return {
@@ -135,7 +139,17 @@ def _make_layer(
         "slit_width_mm": slit_width_mm,
         "slit_depth_mm": slit_depth_mm,
         "slit_pitch_mm": slit_pitch_mm,
+        "k_char_factor": k_char_factor,
+        "hole_filler": hole_filler,
     }
+
+
+# 孔・スリット充填材の選択肢（キー: MATERIAL_DB キー or "air"）
+HOLE_FILLER_OPTIONS: dict[str, str] = {
+    "air": "🌬️ 空気（充填なし）",
+    "kuntan": "⬛ 籾殻くん炭（燻炭）",
+    "momigara": "🌾 籾殻",
+}
 
 
 def init_session_state() -> None:
@@ -263,6 +277,8 @@ def _load_preset(preset_name: str) -> None:
             k_W_mK=layer.get("k_W_mK"),
             cp_J_kgK=layer.get("cp_J_kgK"),
             custom_name=layer.get("custom_name", ""),
+            k_char_factor=layer.get("k_char_factor", 1.0),
+            hole_filler=layer.get("hole_filler", "air"),
         )
         for i, layer in enumerate(spec.get("layers", []))
     ]
@@ -485,6 +501,40 @@ def _render_layer_editor() -> None:
                         value=int(layer["moisture_content"] * 100),
                         key=f"mc_{lid}",
                     )
+                    st.slider(
+                        "炭化熱伝導係数 k_char_factor [-]",
+                        min_value=1.0, max_value=5.0,
+                        value=float(layer.get("k_char_factor", 1.0)),
+                        step=0.1,
+                        key=f"kcf_{lid}",
+                        help="炭化域の熱伝導率倍率。木材:1.0〜1.5、有孔:1.5〜2.0、スリット:2.0〜3.0",
+                    )
+
+            def _render_filler_select(lid=lid, layer=layer):
+                """孔・スリット充填材の選択UI（有孔・スリット加工共通）。"""
+                _fill_keys = list(HOLE_FILLER_OPTIONS.keys())
+                cur_fill = layer.get("hole_filler", "air")
+                if cur_fill not in _fill_keys:
+                    cur_fill = "air"
+                st.selectbox(
+                    "孔・スリット充填材",
+                    options=_fill_keys,
+                    format_func=lambda k: HOLE_FILLER_OPTIONS.get(k, k),
+                    index=_fill_keys.index(cur_fill),
+                    key=f"hfill_{lid}",
+                    help=(
+                        "孔・スリット内部の充填材。\n"
+                        "空気: 従来モデル（池畑式・対流限界）\n"
+                        "くん炭・籾殻: 充填材との並列混合則に切替。"
+                        "充填時は孔内対流・燃え抜けが抑制される。"
+                    ),
+                )
+                _f = st.session_state.get(f"hfill_{lid}", cur_fill)
+                if _f != "air":
+                    st.caption(
+                        "💡 充填時は池畑式（空気孔の実験式）は適用外となり、"
+                        "充填材の温度依存物性値による並列混合則で計算されます。"
+                    )
 
             # ── 木材 ──────────────────────────────────────────────
             if mat_type == "wood":
@@ -518,6 +568,7 @@ def _render_layer_editor() -> None:
                     f"開孔率 φ = π(d/2)²/P² ≈ {_vf_v*100:.1f}%　"
                     f"等価密度 ≈ {layer['rho_0_kg_m3'] * (1 - _vf_v):.0f} kg/m³"
                 )
+                _render_filler_select()
 
             # ── 有孔板（精密：池畑 2021 実験式） ──────────────────
             elif mat_type == "perforated_wood_advanced":
@@ -562,6 +613,7 @@ def _render_layer_editor() -> None:
                     )
                 except Exception:
                     pass
+                _render_filler_select()
 
             # ── スリット加工 ────────────────────────────────────
             elif mat_type == "slitted_wood":
@@ -604,6 +656,7 @@ def _render_layer_editor() -> None:
                     )
                 except Exception:
                     pass
+                _render_filler_select()
                 # void_fraction のダミーキー（build_config で参照）
                 if f"vf_{lid}" not in st.session_state:
                     st.session_state[f"vf_{lid}"] = 0
@@ -851,6 +904,19 @@ def _load_yaml_from_upload(uploaded_file: Any) -> None:
             thickness_mm=layer.thickness_mm,
             rho_0_kg_m3=layer.rho_0_kg_m3,
             moisture_content=layer.moisture_content,
+            material_type=getattr(layer, "material_type", "wood"),
+            void_fraction=getattr(layer, "void_fraction", 0.0),
+            k_W_mK=getattr(layer, "k_W_mK", None),
+            cp_J_kgK=getattr(layer, "cp_J_kgK", None),
+            custom_name=getattr(layer, "custom_name", ""),
+            hole_diameter_mm=getattr(layer, "hole_diameter_mm", 10.0),
+            hole_pitch_mm=getattr(layer, "hole_pitch_mm", 30.0),
+            hole_depth_mm=getattr(layer, "hole_depth_mm", 20.0),
+            slit_width_mm=getattr(layer, "slit_width_mm", 15.0),
+            slit_depth_mm=getattr(layer, "slit_depth_mm", 3.0),
+            slit_pitch_mm=getattr(layer, "slit_pitch_mm", 30.0),
+            k_char_factor=getattr(layer, "k_char_factor", 1.0),
+            hole_filler=getattr(layer, "hole_filler", "air"),
         )
         for i, layer in enumerate(config.specimen.layers)
     ]
@@ -928,6 +994,8 @@ def build_config() -> CLTConfig:
         k_val = st.session_state.get(f"k_custom_{lid}", layer.get("k_W_mK"))
         cp_val = st.session_state.get(f"cp_custom_{lid}", layer.get("cp_J_kgK"))
         custom_name = st.session_state.get(f"custom_name_{lid}", layer.get("custom_name", ""))
+        k_char_factor = float(st.session_state.get(f"kcf_{lid}", layer.get("k_char_factor", 1.0)))
+        hole_filler = str(st.session_state.get(f"hfill_{lid}", layer.get("hole_filler", "air")))
 
         layers.append(LayerConfig(
             material=material,
@@ -945,6 +1013,8 @@ def build_config() -> CLTConfig:
             slit_width_mm=slit_width_mm,
             slit_depth_mm=slit_depth_mm,
             slit_pitch_mm=slit_pitch_mm,
+            k_char_factor=k_char_factor,
+            hole_filler=hole_filler,
         ))
 
     n_cells = int(st.session_state.get(
@@ -1054,6 +1124,11 @@ def _layer_to_dict(layer: "LayerConfig") -> dict:
         d["slit_width_mm"] = layer.slit_width_mm
         d["slit_depth_mm"] = layer.slit_depth_mm
         d["slit_pitch_mm"] = layer.slit_pitch_mm
+    if getattr(layer, "k_char_factor", 1.0) != 1.0:
+        d["k_char_factor"] = round(layer.k_char_factor, 2)
+    # 孔・スリット充填材（"air" 以外のみ保存）
+    if getattr(layer, "hole_filler", "air") != "air":
+        d["hole_filler"] = layer.hole_filler
     return d
 
 

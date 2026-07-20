@@ -567,6 +567,45 @@ MATERIAL_DB: dict[str, dict] = {
         "standard": "文献値（田中俊六ら2014）λ=0.051 W/mK",
         "properties_type": "constant",
     },
+
+    # ── 農業系副産物（籾殻・籾殻くん炭）───────────────────────────────
+    "momigara": {
+        "name": "籾殻（もみ殻・ばら充填）",
+        "rho_0": 130.0,        # ばら充填かさ密度 100〜160 kg/m³（Yarbrough et al. 2005: 154 kg/m³）
+        "moisture_content": 0.10,  # 平衡含水率 8〜12% の代表値
+        "k_measured": 0.050,   # Yarbrough et al.(2005) 実測 0.0464〜0.0566 W/mK @24°C の中央値
+        "standard": "Yarbrough et al. (2005) ORNL 実測値 λ=0.046〜0.057 W/mK",
+        "properties_type": "wood",
+        "notes": (
+            "籾殻ばら充填層。熱伝導率は Yarbrough et al.(2005, Oak Ridge National "
+            "Laboratory) の実測値 0.0464〜0.0566 W/mK（24°C）の中央値 0.050 を採用。\n"
+            "比熱は Eurocode 5 木材テーブル（20°C: 1530 J/kgK）を流用"
+            "（Marques et al. 2020 の籾殻実測 1599 J/kgK @40°C とほぼ一致）。\n"
+            "籾殻はシリカ（SiO₂）を 15〜20% 含み、燃焼後も断熱性の高い灰骨格が残る。"
+            "Eurocode 5 の残存密度比（800°C で 0.26）は籾殻の灰分残存率と近く、"
+            "木材モデルの流用は近似として妥当。\n"
+            "【注意】ばら材のため自重沈下・対流の影響は本モデルでは考慮されない。"
+        ),
+    },
+    "kuntan": {
+        "name": "籾殻くん炭（燻炭・炭化籾殻）",
+        "rho_0": 110.0,        # くん炭かさ密度 ~0.1 g/cm³（ばら充填）
+        "moisture_content": 0.0,
+        "k": 0.050,            # 炭化籾殻ばら材の文献値 0.040〜0.05 W/mK
+        "k_measured": 0.050,   # 室温表示用（app.py の λ 参照キー）
+        "standard": "文献値（炭化籾殻ばら材 λ≈0.04〜0.05 W/mK・関野ら2018）",
+        "properties_type": "kuntan",
+        "notes": (
+            "籾殻を燻焼炭化させた多孔質炭素材（ばら充填）。\n"
+            "既に炭化済みのため熱分解・水分蒸発ピークなし（炭化コルクと同型のモデル）。\n"
+            "室温 λ=0.050 W/mK: 炭化籾殻ばら材の文献値（密度 275 kg/m³ 以下で "
+            "λ≤0.05 W/mK、MDPI Buildings 2024 ほか）。関野ら(2018, 岩手大)は"
+            "炭化による断熱性能維持と 450°C 炭化での λ 低下最大を報告。\n"
+            "高温域: 多孔質炭素の輻射伝熱による λ 上昇（炭化コルクモデルと同比率でスケール）。\n"
+            "シリカ骨格（灰分 30〜40%）により高温でも形状保持性が高い。\n"
+            "【注意】ばら材のため沈下・対流は考慮されない。"
+        ),
+    },
 }
 
 
@@ -740,6 +779,95 @@ class CharredCorkProperties:
 
 
 # ---------------------------------------------------------------------------
+# 籾殻くん炭（燻炭）温度依存物性値クラス
+# ---------------------------------------------------------------------------
+
+# 籾殻くん炭の熱伝導率 λ(T) [W/(m·K)] 推定テーブル
+# 【根拠】
+# - 室温（20°C）: 炭化籾殻ばら材の文献値 λ=0.040〜0.05 W/mK
+#   （MDPI Buildings 2024: 密度275 kg/m³以下で λ≤0.05 / 関野ら2018 岩手大）
+# - 高温域: 多孔質炭素系材料の輻射伝熱増大（炭化コルク _CHARRED_CORK_K_TABLE
+#   と同じ温度依存比率でスケール: 0.050/0.041 ≈ 1.22倍）
+# - くん炭は既に炭化済みのため熱分解による構造変化は小さいが、
+#   細孔内輻射により 400°C 以上で見かけλが上昇する
+_KUNTAN_K_TABLE: ThermalTable = [
+    (20,   0.050),   # 文献値（炭化籾殻ばら材）
+    (100,  0.057),
+    (200,  0.070),   # 輻射項の発現
+    (300,  0.083),
+    (400,  0.104),   # 細孔内輻射が支配的に
+    (500,  0.134),
+    (600,  0.165),
+    (800,  0.232),   # 高温炭素骨格の輻射伝熱
+]
+
+# 籾殻くん炭の比熱 cp(T) [J/(kg·K)] 推定テーブル
+# - 炭素（チャー）+ シリカ灰分（30〜40%）の混合材
+# - 室温: 炭素 ~710-1000 J/kgK とシリカ ~740 J/kgK の中間 ~900
+# - 高温: 炭素の cp は温度と共に上昇（グラファイト: 500°C で ~1400 J/kgK）
+_KUNTAN_CP_TABLE: ThermalTable = [
+    (20,    900.0),
+    (200,  1100.0),
+    (400,  1250.0),
+    (600,  1350.0),
+    (800,  1450.0),
+]
+
+# 籾殻くん炭の密度比 ρ(T)/ρ₀ 推定テーブル
+# 既に炭化済み + シリカ骨格のためほぼ不変。
+# 400°C 以上で残留揮発分の放出による軽微な質量減少
+_KUNTAN_RHO_RATIO_TABLE: ThermalTable = [
+    (20,   1.00),
+    (300,  1.00),
+    (500,  0.95),
+    (800,  0.88),
+]
+
+
+class KuntanProperties:
+    """籾殻くん炭（燻炭・炭化籾殻）の温度依存熱物性クラス。
+
+    炭化コルク（CharredCorkProperties）と同型の「既炭化多孔質材」モデル。
+    既に炭化済みのため水分蒸発・熱分解ピークを持たず、
+    高温域では細孔内輻射による見かけ熱伝導率の上昇を反映する。
+
+    【物性値の根拠】
+    - 室温 λ=0.050 W/mK: 炭化籾殻ばら材の文献値
+      （MDPI Buildings 2024; 関野ら 2018 岩手大学農学部）
+    - 温度依存性: 多孔質炭素系材料の文献的挙動
+      （炭化コルクテーブルとの相似則でスケール）
+    - シリカ灰分 30〜40% により高温でも形状保持性が高い
+
+    Parameters
+    ----------
+    rho_0 : float
+        初期かさ密度 [kg/m³]。デフォルト 110 kg/m³（ばら充填 ~0.1 g/cm³）。
+    smooth_half_width : float
+        テーブル段差のスムージング幅の半分 [°C]。
+    """
+
+    def __init__(self, rho_0: float = 110.0, smooth_half_width: float = 5.0) -> None:
+        self.rho_0 = float(rho_0)
+        self._k_table = smooth_table_jumps(_KUNTAN_K_TABLE, smooth_half_width)
+        self._cp_table = smooth_table_jumps(_KUNTAN_CP_TABLE, smooth_half_width)
+        self._rho_ratio_table = smooth_table_jumps(
+            _KUNTAN_RHO_RATIO_TABLE, smooth_half_width
+        )
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存熱伝導率 λ(T) [W/(m·K)] を返す。"""
+        return table_interp(self._k_table, np.asarray(T, dtype=float))
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。"""
+        T_arr = np.asarray(T, dtype=float)
+        rho_ratio = table_interp(self._rho_ratio_table, T_arr)
+        cp = table_interp(self._cp_table, T_arr)
+        rho = np.maximum(self.rho_0 * rho_ratio, 1.0)
+        return rho * cp
+
+
+# ---------------------------------------------------------------------------
 # 有孔板の等価物性値クラス
 # ---------------------------------------------------------------------------
 
@@ -752,9 +880,10 @@ class PerforatedWoodProperties:
     """等間隔孔・スリット板の等価均質物性値クラス。
 
     木材の物性値に空洞率 φ を考慮した等価物性値を計算する（並列混合則）:
-        k_eff     = (1-φ) * k_wood(T)     + φ * k_air
-        ρcp_eff   = (1-φ) * ρcp_wood(T)  + φ * ρcp_air
+        k_eff     = (1-φ) * k_wood(T)     + φ * k_void(T)
+        ρcp_eff   = (1-φ) * ρcp_wood(T)  + φ * ρcp_void(T)
 
+    孔内は空気（デフォルト）または充填材（籾殻くん炭・籾殻など）。
     この近似は孔が加熱面と平行に配置（板厚方向に垂直）された場合に妥当。
     実際の 3D 効果（孔端部の温度集中など）は無視される。
 
@@ -764,26 +893,48 @@ class PerforatedWoodProperties:
         ベースとなる木材の物性値オブジェクト。
     void_fraction : float
         空洞率（0〜0.95）。断面積に占める孔・スリットの割合。
+    filler_props : object or None
+        孔・スリットの充填材物性値オブジェクト
+        （get_k_array / get_rho_cp_array を持つもの。例: KuntanProperties）。
+        None の場合は静止空気として扱う（従来動作）。
     """
 
-    def __init__(self, base_props: WoodProperties, void_fraction: float) -> None:
+    def __init__(
+        self,
+        base_props: WoodProperties,
+        void_fraction: float,
+        filler_props=None,
+    ) -> None:
         self.base = base_props
         self.vf = float(max(0.0, min(0.95, void_fraction)))
+        self.filler = filler_props
+
+    def _void_k(self, T: np.ndarray) -> np.ndarray | float:
+        """孔部分の熱伝導率（充填材 or 空気）を返す。"""
+        if self.filler is not None:
+            return self.filler.get_k_array(np.asarray(T, dtype=float))
+        return _AIR_K
+
+    def _void_rho_cp(self, T: np.ndarray) -> np.ndarray | float:
+        """孔部分の体積熱容量（充填材 or 空気）を返す。"""
+        if self.filler is not None:
+            return self.filler.get_rho_cp_array(np.asarray(T, dtype=float))
+        return _AIR_RHO_CP
 
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """等価熱伝導率を返す（並列混合則）。"""
         k_wood = self.base.get_k_array(T)
-        return (1.0 - self.vf) * k_wood + self.vf * _AIR_K
+        return (1.0 - self.vf) * k_wood + self.vf * self._void_k(T)
 
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """等価体積熱容量を返す（並列混合則）。"""
         rho_cp_wood = self.base.get_rho_cp_array(T)
-        return (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        return (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
 
     def get_rho_cp_dry_array(self, T: np.ndarray) -> np.ndarray:
         """乾燥後の等価体積熱容量を返す（放冷フェーズ用）。"""
         rho_cp_wood = self.base.get_rho_cp_dry_array(T)
-        return (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        return (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
 
 
 # ---------------------------------------------------------------------------
@@ -863,17 +1014,22 @@ class PerforatedWoodAdvanced:
         hole_diameter_mm: float = 3.0,
         hole_depth_mm: float = 20.0,
         layer_thickness_mm: float | None = None,
+        filler_props=None,
     ) -> None:
         self.base = base_props
         self.vf = float(np.clip(void_fraction, 0.0, 0.95))
         self.phi_mm = float(hole_diameter_mm)
         self.h_mm = float(hole_depth_mm)
         self.t_mm = float(layer_thickness_mm if layer_thickness_mm is not None else hole_depth_mm)
+        # 孔の充填材（None = 空気孔）
+        # 【重要】池畑(2021)実験式は空気孔（孔内の伝導+輻射+対流）に基づく
+        # 実験回帰式のため、充填材がある場合は適用外 → 並列混合則に切り替える
+        self.filler = filler_props
 
         # 池畑式による孔部熱抵抗
         self._ra1 = _ra1_ikehata(self.phi_mm, self.h_mm)
-        # 高温（炭化温度以上）用のフォールバック（並列混合則）
-        self._fallback = PerforatedWoodProperties(base_props, self.vf)
+        # 高温（炭化温度以上）・充填材使用時のフォールバック（並列混合則）
+        self._fallback = PerforatedWoodProperties(base_props, self.vf, filler_props)
 
         # 孔深さと板厚の比
         self._h_ratio = min(self.h_mm / max(self.t_mm, 1e-3), 1.0)
@@ -881,10 +1037,20 @@ class PerforatedWoodAdvanced:
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """等価熱伝導率を返す。
 
-        炭化温度（300°C）以下では池畑式、それ以上では並列混合則に切り替え
-        （炭化後は孔の形状が変化し実験式の適用外になるため）。
+        空気孔: 炭化温度（300°C）以下では池畑式、それ以上では並列混合則に
+        切り替え（炭化後は孔の形状が変化し実験式の適用外になるため）。
+        充填孔（くん炭・籾殻など）: 全温度域で充填材との並列混合則
+        （池畑式は空気孔の実験回帰式のため適用外）。
         """
         T = np.asarray(T, dtype=float)
+
+        # 充填材あり → 全温度域で並列混合則（孔深さ比の加重は下で適用）
+        if self.filler is not None:
+            k_wood = self.base.get_k_array(T)
+            k_mixed = self._fallback.get_k_array(T)
+            h_ratio = self._h_ratio
+            return h_ratio * k_mixed + (1.0 - h_ratio) * k_wood
+
         k_wood = self.base.get_k_array(T)
         L_m = self.h_mm * 1e-3  # 孔深さ [m]
 
@@ -909,12 +1075,18 @@ class PerforatedWoodAdvanced:
         char_mask = T >= 300.0
         return np.where(char_mask, k_fallback, k_eff)
 
+    def _void_rho_cp(self, T: np.ndarray) -> np.ndarray | float:
+        """孔部分の体積熱容量（充填材 or 空気）を返す。"""
+        if self.filler is not None:
+            return self.filler.get_rho_cp_array(np.asarray(T, dtype=float))
+        return _AIR_RHO_CP
+
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """等価体積熱容量を返す（並列混合則で近似）。"""
         T = np.asarray(T, dtype=float)
         rho_cp_wood = self.base.get_rho_cp_array(T)
-        # 孔深さ部分のみ空気で置換、それ以外は木材
-        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        # 孔深さ部分のみ充填材/空気で置換、それ以外は木材
+        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
         h_ratio = self._h_ratio
         return h_ratio * rho_cp_eff_holed + (1.0 - h_ratio) * rho_cp_wood
 
@@ -922,7 +1094,7 @@ class PerforatedWoodAdvanced:
         """乾燥後の体積熱容量（蒸発ピーク再適用なし）。"""
         T = np.asarray(T, dtype=float)
         rho_cp_wood = self.base.get_rho_cp_dry_array(T)
-        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        rho_cp_eff_holed = (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
         h_ratio = self._h_ratio
         return h_ratio * rho_cp_eff_holed + (1.0 - h_ratio) * rho_cp_wood
 
@@ -979,6 +1151,7 @@ class SlittedWoodProperties:
         slit_pitch_mm: float = 30.0,
         layer_thickness_mm: float = 30.0,
         d_conv_mm: float = 9.0,
+        filler_props=None,
     ) -> None:
         self.base = base_props
         self.W = float(slit_width_mm)
@@ -986,6 +1159,10 @@ class SlittedWoodProperties:
         self.P = float(max(slit_pitch_mm, slit_width_mm + 1.0))
         self.t = float(layer_thickness_mm)
         self.d_conv = float(d_conv_mm)
+        # スリットの充填材（None = 空気スリット）
+        # 【重要】対流遷移深さ・0.6 補正係数は空気スリットの実験知見のため、
+        # 充填材がある場合は適用外 → 充填材との並列混合則に切り替える
+        self.filler = filler_props
 
         # 開孔率（スリット断面積 / 総断面積）= W / P
         self.vf = min(self.W / self.P, 0.95)
@@ -997,8 +1174,8 @@ class SlittedWoodProperties:
         # （実測 Rs は理論値の約 60% に相当することを実験データから確認）
         self._rs = D_eff * 1e-3 / _AIR_K * 0.6
 
-        # フォールバック（並列混合則）
-        self._fallback = PerforatedWoodProperties(base_props, self.vf)
+        # フォールバック（並列混合則、充填材があれば充填材と混合）
+        self._fallback = PerforatedWoodProperties(base_props, self.vf, filler_props)
 
         # スリット深さの板厚に対する比
         self._d_ratio = min(self.D / max(self.t, 1e-3), 1.0)
@@ -1011,11 +1188,20 @@ class SlittedWoodProperties:
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """等価熱伝導率を返す。
 
-        スリット深さ範囲の等価 k を計算し、それ以外の板厚部分と加重平均する。
-        炭化温度（300°C）以上では並列混合則にフォールバック。
+        空気スリット: スリット深さ範囲の等価 k を計算し、それ以外の板厚部分と
+        加重平均する。炭化温度（300°C）以上では並列混合則にフォールバック。
+        充填スリット（くん炭・籾殻など）: 全温度域で充填材との並列混合則
+        （対流限界・0.6 補正は空気スリットの実験知見のため適用外）。
         """
         T = np.asarray(T, dtype=float)
         k_wood = self.base.get_k_array(T)
+
+        # 充填材あり → スリット深さ範囲を充填材と並列混合、対流限界なし
+        if self.filler is not None:
+            k_mixed = self._fallback.get_k_array(T)
+            d_ratio = self._d_ratio
+            return d_ratio * k_mixed + (1.0 - d_ratio) * k_wood
+
         D_eff_m = min(self.D, self.d_conv) * 1e-3  # [m]
 
         # スリット深さ部分の等価 k
@@ -1031,11 +1217,17 @@ class SlittedWoodProperties:
         k_fallback = self._fallback.get_k_array(T)
         return np.where(T >= 300.0, k_fallback, k_eff)
 
+    def _void_rho_cp(self, T: np.ndarray) -> np.ndarray | float:
+        """スリット部分の体積熱容量（充填材 or 空気）を返す。"""
+        if self.filler is not None:
+            return self.filler.get_rho_cp_array(np.asarray(T, dtype=float))
+        return _AIR_RHO_CP
+
     def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
         """等価体積熱容量を返す（並列混合則で近似）。"""
         T = np.asarray(T, dtype=float)
         rho_cp_wood = self.base.get_rho_cp_array(T)
-        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
         d_ratio = self._d_ratio
         return d_ratio * rho_cp_eff_slit + (1.0 - d_ratio) * rho_cp_wood
 
@@ -1043,7 +1235,7 @@ class SlittedWoodProperties:
         """乾燥後の体積熱容量（蒸発ピーク再適用なし）。"""
         T = np.asarray(T, dtype=float)
         rho_cp_wood = self.base.get_rho_cp_dry_array(T)
-        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * _AIR_RHO_CP
+        rho_cp_eff_slit = (1.0 - self.vf) * rho_cp_wood + self.vf * self._void_rho_cp(T)
         d_ratio = self._d_ratio
         return d_ratio * rho_cp_eff_slit + (1.0 - d_ratio) * rho_cp_wood
 
@@ -1109,6 +1301,12 @@ def make_properties(
     # 炭化コルク専用温度依存モデル（CharredCorkProperties）
     if props_type == "charred_cork":
         return CharredCorkProperties(
+            rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
+        )
+
+    # 籾殻くん炭（既炭化多孔質材モデル）
+    if props_type == "kuntan":
+        return KuntanProperties(
             rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
         )
 

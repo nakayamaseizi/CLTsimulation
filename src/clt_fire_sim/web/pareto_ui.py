@@ -17,7 +17,7 @@ def render_pareto_tab() -> None:
     """パレート最適化タブを描画する。"""
     from clt_fire_sim.optimizer.pareto_optimizer import (
         get_default_d_list,
-        get_default_p_list,
+        get_default_N_list,
         get_pareto_state,
         start_pareto_optimization,
         stop_pareto,
@@ -28,13 +28,13 @@ def render_pareto_tab() -> None:
     # カスタム追加値の初期化
     if "pareto_extra_d" not in st.session_state:
         st.session_state["pareto_extra_d"] = []
-    if "pareto_extra_p" not in st.session_state:
-        st.session_state["pareto_extra_p"] = []
+    if "pareto_extra_N" not in st.session_state:
+        st.session_state["pareto_extra_N"] = []
     # multiselect の初期選択（キーが未設定のときのみ）
     if "pareto_d_list" not in st.session_state:
         st.session_state["pareto_d_list"] = [0, 6, 12, 18, 24, 30]
-    if "pareto_p_list" not in st.session_state:
-        st.session_state["pareto_p_list"] = [30, 40, 50, 60, 80, 100]
+    if "pareto_N_list" not in st.session_state:
+        st.session_state["pareto_N_list"] = [1, 4, 9, 16, 25]
 
     st.header("🎯 パレート最適化（孔パターン×ラミナ構成）")
     st.caption(
@@ -66,7 +66,7 @@ def render_pareto_tab() -> None:
         )
     else:
         st.warning(
-            "**3Dモード**: ユニットセル（1ピッチ×1ピッチ）の有限体積法で"
+            "**3Dモード**: ユニットセル（等価ピッチ p_eff = √(W×H/N)）の有限体積法で"
             " 孔内部を ISO 834 曲線温度に固定し、**燃え抜けを直接考慮**します。"
             " 計算時間は 1D の約 10〜50 倍です。"
         )
@@ -101,11 +101,25 @@ def render_pareto_tab() -> None:
     # パラメータ設定 UI
     # ──────────────────────────────────────────────────────────────
     with st.expander("⚙️ 探索パラメータ設定", expanded=True):
-        col_d, col_p, col_t = st.columns(3)
+        # ── 試験体寸法 ─────────────────────────────────────────────────
+        st.markdown("**📏 試験体寸法**")
+        _wh_c1, _wh_c2 = st.columns(2)
+        W_mm = _wh_c1.number_input(
+            "試験体幅 W [mm]", min_value=50.0, max_value=2000.0,
+            value=300.0, step=50.0, key="pareto_W_mm",
+            help="有孔ラミナの幅方向寸法",
+        )
+        H_mm = _wh_c2.number_input(
+            "試験体高さ H [mm]", min_value=50.0, max_value=2000.0,
+            value=300.0, step=50.0, key="pareto_H_mm",
+            help="有孔ラミナの高さ方向寸法",
+        )
+
+        col_d, col_N, col_t = st.columns(3)
 
         # ── on_click コールバック（描画前に session_state を更新） ──────
         _D_PRESETS = [0, 6, 12, 18, 24, 30, 36, 40]
-        _P_PRESETS = [30, 40, 50, 60, 80, 100]
+        _N_PRESETS = [1, 4, 9, 16, 25, 36, 49]
 
         def _on_add_d():
             v = st.session_state["pareto_d_custom_input"]
@@ -116,14 +130,14 @@ def render_pareto_tab() -> None:
             if v not in sel:
                 st.session_state["pareto_d_list"] = sorted(sel + [v])
 
-        def _on_add_p():
-            v = st.session_state["pareto_p_custom_input"]
-            extras = st.session_state.get("pareto_extra_p", [])
-            if v not in extras and v not in _P_PRESETS:
-                st.session_state["pareto_extra_p"] = sorted(extras + [v])
-            sel = list(st.session_state.get("pareto_p_list", []))
+        def _on_add_N():
+            v = int(st.session_state["pareto_N_custom_input"])
+            extras = st.session_state.get("pareto_extra_N", [])
+            if v not in extras and v not in _N_PRESETS:
+                st.session_state["pareto_extra_N"] = sorted(extras + [v])
+            sel = list(st.session_state.get("pareto_N_list", []))
             if v not in sel:
-                st.session_state["pareto_p_list"] = sorted(sel + [v])
+                st.session_state["pareto_N_list"] = sorted(sel + [v])
 
         with col_d:
             st.markdown("**🔵 孔径 d [mm]**")
@@ -142,22 +156,22 @@ def render_pareto_tab() -> None:
                         on_click=_on_add_d, use_container_width=True)
             d_list = sorted(float(d) for d in d_selected) if d_selected else [0.0]
 
-        with col_p:
-            st.markdown("**📐 ピッチ p [mm]**")
-            _p_opts = sorted(set(_P_PRESETS + st.session_state.get("pareto_extra_p", [])))
-            p_selected = st.multiselect(
-                "ピッチ候補を選択",
-                _p_opts,
-                key="pareto_p_list",
+        with col_N:
+            st.markdown("**🔢 孔数 N**")
+            _N_opts = sorted(set(_N_PRESETS + st.session_state.get("pareto_extra_N", [])))
+            N_selected = st.multiselect(
+                "孔数候補を選択",
+                _N_opts,
+                key="pareto_N_list",
             )
-            _pc1, _pc2 = st.columns([3, 1])
-            _pc1.number_input(
-                "追加 [mm]", min_value=1.0, max_value=500.0,
-                value=45.0, step=1.0, key="pareto_p_custom_input",
+            _nc1, _nc2 = st.columns([3, 1])
+            _nc1.number_input(
+                "追加", min_value=1, max_value=500,
+                value=6, step=1, key="pareto_N_custom_input",
             )
-            _pc2.button("追加", key="pareto_p_add_btn",
-                        on_click=_on_add_p, use_container_width=True)
-            p_list = sorted(float(p) for p in p_selected) if p_selected else [50.0]
+            _nc2.button("追加", key="pareto_N_add_btn",
+                        on_click=_on_add_N, use_container_width=True)
+            N_list = sorted(int(n) for n in N_selected) if N_selected else [9]
 
         with col_t:
             st.markdown("**📏 ラミナ構成**")
@@ -180,26 +194,30 @@ def render_pareto_tab() -> None:
             ))
             st.caption(f"総厚の候補 [mm]: {[int(x) for x in total_options]}")
 
-        # ── (d, p) 有効組み合わせマトリクス ──────────────────────────
-        if d_list and p_list:
+        # ── (d, N) 有効組み合わせマトリクス ──────────────────────────
+        if d_list and N_list:
             import pandas as pd
-            _dp_rows = {}
+            import math
+            _dn_rows = {}
             for _d in d_list:
                 _label_d = f"d={int(_d) if _d == int(_d) else _d}mm"
                 _row = {}
-                for _p in p_list:
-                    _label_p = f"p={int(_p) if _p == int(_p) else _p}"
+                for _N in N_list:
+                    _label_N = f"N={_N}"
                     if _d == 0:
-                        _row[_label_p] = "孔なし"
-                    elif _p <= _d:
-                        _row[_label_p] = "✗ 除外"
-                    elif _compute_vf(_d, _p) > 0.79:
-                        _row[_label_p] = "✗ vf>79%"
+                        _row[_label_N] = "孔なし"
                     else:
-                        _vf = _compute_vf(_d, _p)
-                        _row[_label_p] = f"✓ vf={_vf:.0%}"
-                _dp_rows[_label_d] = _row
-            _df_dp = pd.DataFrame(_dp_rows).T
+                        _p_eff = math.sqrt(W_mm * H_mm / _N)
+                        if _d >= _p_eff:
+                            _row[_label_N] = "✗ 除外"
+                        else:
+                            _vf = _compute_vf(_d, _N, W_mm, H_mm)
+                            if _vf > 0.79:
+                                _row[_label_N] = "✗ vf>79%"
+                            else:
+                                _row[_label_N] = f"✓ vf={_vf:.0%}"
+                _dn_rows[_label_d] = _row
+            _df_dn = pd.DataFrame(_dn_rows).T
 
             def _color_cell(val):
                 if val.startswith("✗"):
@@ -208,20 +226,27 @@ def render_pareto_tab() -> None:
                     return "background-color:#e8e8e8; color:#555"
                 return "background-color:#d4edda; color:#155724"
 
-            st.markdown("**📋 (d, p) 有効組み合わせ確認**")
+            st.markdown("**📋 (d, N) 有効組み合わせ確認**")
             _n_valid = sum(
-                1 for _d in d_list for _p in p_list
-                if not (_d == 0 and _p != min(p_list))
-                and (_d == 0 or (_p > _d and _compute_vf(_d, _p) <= 0.79))
+                1 for _d in d_list for _N in N_list
+                if _d == 0
+                or (
+                    _d < math.sqrt(W_mm * H_mm / _N)
+                    and _compute_vf(_d, _N, W_mm, H_mm) <= 0.79
+                )
             )
+            # 無孔は1点のみカウント
+            _n_solid = 1 if 0.0 in d_list else 0
+            _n_hole_valid = _n_valid - len(N_list) * _n_solid + _n_solid
             st.caption(
                 f"✓ 有効: **{_n_valid} 通り**（孔なし×1を含む）　"
-                f"✗ 除外: {len(d_list) * len(p_list) - _n_valid} 通り"
+                f"✗ 除外: {len(d_list) * len(N_list) - _n_valid} 通り　"
+                f"（試験体 {int(W_mm)}×{int(H_mm)} mm）"
             )
             try:
-                _styled = _df_dp.style.map(_color_cell)  # pandas >= 2.1
+                _styled = _df_dn.style.map(_color_cell)  # pandas >= 2.1
             except AttributeError:
-                _styled = _df_dp.style.applymap(_color_cell)  # pandas < 2.1
+                _styled = _df_dn.style.applymap(_color_cell)  # pandas < 2.1
             st.dataframe(
                 _styled,
                 use_container_width=True,
@@ -272,11 +297,11 @@ def render_pareto_tab() -> None:
         # 候補数と所要時間のプレビュー
         try:
             preview_candidates = _generate_candidates(
-                d_list, p_list, t_lam_list, n_lam_max, t_face_list=t_face_list
+                d_list, N_list, W_mm, H_mm, t_lam_list, n_lam_max, t_face_list=t_face_list
             )
             if is_3d:
                 unique_keys = set(
-                    (round(c.d_mm, 2), round(c.p_mm, 2),
+                    (round(c.d_mm, 2), round(c.p_eff_mm, 2),
                      float(c.total_mm), float(c.t_face_mm))
                     for c in preview_candidates
                 )
@@ -335,11 +360,13 @@ def render_pareto_tab() -> None:
 
     col_run, col_stop = st.columns([4, 1])
     with col_run:
-        run_disabled = state.status == "running" or not t_lam_list or not p_list
+        run_disabled = state.status == "running" or not t_lam_list or not N_list
         if st.button("🚀 パレート最適化を実行", disabled=run_disabled, use_container_width=True):
             start_pareto_optimization(
                 d_list=d_list,
-                p_list=p_list,
+                N_list=N_list,
+                W_mm=W_mm,
+                H_mm=H_mm,
                 t_lam_list=t_lam_list,
                 n_lam_max=n_lam_max,
                 base_mat=base_mat,
@@ -441,7 +468,7 @@ def _render_pareto_results(state) -> None:
 
     # ユニーク値を取得
     unique_d = sorted(set(c.d_mm for c in all_cands))
-    unique_p = sorted(set(c.p_mm for c in all_cands))
+    unique_N = sorted(set(c.N_holes for c in all_cands))
     unique_t = sorted(set(c.t_lam_mm for c in all_cands))
     unique_face = sorted(set(c.t_face_mm for c in all_cands))
     has_face = len(unique_face) > 1 or (len(unique_face) == 1 and unique_face[0] > 0)
@@ -449,7 +476,7 @@ def _render_pareto_results(state) -> None:
     # ─── 表示フィルタ チェックボックス ─────────────────────────────
     with st.expander("🔍 グラフ表示フィルタ", expanded=True):
         filter_cols = st.columns(4 if has_face else 3)
-        col_fd, col_fp, col_ft = filter_cols[0], filter_cols[1], filter_cols[2]
+        col_fd, col_fN, col_ft = filter_cols[0], filter_cols[1], filter_cols[2]
 
         with col_fd:
             st.markdown("**🔵 孔径 d [mm]**")
@@ -463,16 +490,14 @@ def _render_pareto_results(state) -> None:
                     label, value=all_d_on, key=f"filter_d_{d}"
                 )
 
-        with col_fp:
-            st.markdown("**📐 ピッチ p [mm]**")
-            all_p_on = st.checkbox("すべて選択", value=True, key="filter_p_all")
+        with col_fN:
+            st.markdown("**🔢 孔数 N**")
+            all_N_on = st.checkbox("すべて選択", value=True, key="filter_N_all")
             st.divider()
-            sel_p: dict[float, bool] = {}
-            for p in unique_p:
-                p_str = f"{int(p)}" if p == int(p) else f"{p}"
-                sel_p[p] = st.checkbox(
-                    f"p = {p_str} mm", value=all_p_on, key=f"filter_p_{p}"
-                )
+            sel_N: dict[int, bool] = {}
+            for N in unique_N:
+                label = f"N = {N}（無孔）" if N == 0 else f"N = {N}"
+                sel_N[N] = st.checkbox(label, value=all_N_on, key=f"filter_N_{N}")
 
         with col_ft:
             st.markdown("**📏 ラミナ厚 [mm]**")
@@ -502,7 +527,7 @@ def _render_pareto_results(state) -> None:
         face_ok = sel_face.get(c.t_face_mm, True) if sel_face else True
         return (
             sel_d.get(c.d_mm, True)
-            and sel_p.get(c.p_mm, True)
+            and sel_N.get(c.N_holes, True)
             and sel_t.get(c.t_lam_mm, True)
             and face_ok
         )
@@ -555,7 +580,7 @@ def _render_pareto_results(state) -> None:
             legendgroup=f"d_{int(d)}",
             customdata=np.column_stack([
                 [c.d_mm for c in d_cands],
-                [c.p_mm for c in d_cands],
+                [c.N_holes for c in d_cands],
                 [c.vf for c in d_cands],
                 [c.total_mm for c in d_cands],
                 [c.t_lam_mm for c in d_cands],
@@ -566,7 +591,7 @@ def _render_pareto_results(state) -> None:
             ]),
             hovertemplate=(
                 f"<b>{d_label}</b><br>"
-                "p=%{customdata[1]:.0f}mm | 空洞率 vf=%{customdata[2]:.3f}<br>"
+                "N=%{customdata[1]:.0f}孔 | 開口率 vf=%{customdata[2]:.3f}<br>"
                 "有孔ラミナ=%{customdata[3]:.0f}mm "
                 "(%{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚)<br>"
                 "表面パネル=%{customdata[6]:.0f}mm<br>"
@@ -591,7 +616,7 @@ def _render_pareto_results(state) -> None:
             name="★ パレート最適解（表示中）",
             customdata=np.column_stack([
                 [c.d_mm for c in fp_sorted],
-                [c.p_mm for c in fp_sorted],
+                [c.N_holes for c in fp_sorted],
                 [c.vf for c in fp_sorted],
                 [c.total_mm for c in fp_sorted],
                 [c.t_lam_mm for c in fp_sorted],
@@ -602,8 +627,8 @@ def _render_pareto_results(state) -> None:
             ]),
             hovertemplate=(
                 "<b>★ パレート最適解</b><br>"
-                "d=%{customdata[0]:.0f}mm / p=%{customdata[1]:.0f}mm<br>"
-                "空洞率 vf=%{customdata[2]:.3f} | 有孔ラミナ=%{customdata[3]:.0f}mm<br>"
+                "d=%{customdata[0]:.0f}mm / N=%{customdata[1]:.0f}孔<br>"
+                "開口率 vf=%{customdata[2]:.3f} | 有孔ラミナ=%{customdata[3]:.0f}mm<br>"
                 "ラミナ %{customdata[4]:.0f}mm×%{customdata[5]:.0f}枚 "
                 "| 表面パネル=%{customdata[6]:.0f}mm<br>"
                 "λ_eff=%{customdata[7]:.4f} W/mK | U=%{customdata[8]:.3f} W/m²K<br>"
@@ -662,8 +687,10 @@ def _render_pareto_results(state) -> None:
     for _c in all_cands:
         _scatter_rows.append({
             "孔径d[mm]": _c.d_mm,
-            "ピッチp[mm]": _c.p_mm,
-            "空洞率vf": round(_c.vf, 4),
+            "孔数N": _c.N_holes,
+            "試験体幅W[mm]": _c.W_mm,
+            "試験体高さH[mm]": _c.H_mm,
+            "開口率vf": round(_c.vf, 4),
             "ラミナ厚[mm]": _c.t_lam_mm,
             "枚数": _c.n_lam,
             "有孔層総厚[mm]": _c.total_mm,
@@ -705,8 +732,8 @@ def _render_pareto_results(state) -> None:
             rows.append({
                 "表面パネル": face_info,
                 "孔径 d [mm]": int(c.d_mm),
-                "ピッチ p [mm]": int(c.p_mm),
-                "空洞率 vf": f"{c.vf:.3f}",
+                "孔数 N": int(c.N_holes),
+                "開口率 vf": f"{c.vf:.3f}",
                 "ラミナ厚 [mm]": int(c.t_lam_mm),
                 "枚数": int(c.n_lam),
                 "有孔層総厚 [mm]": int(c.total_mm),
@@ -739,8 +766,8 @@ def _render_pareto_results(state) -> None:
             rows_all.append({
                 "表面パネル": face_info_all,
                 "孔径 d [mm]": int(c.d_mm),
-                "ピッチ p [mm]": int(c.p_mm),
-                "空洞率 vf": f"{c.vf:.3f}",
+                "孔数 N": int(c.N_holes),
+                "開口率 vf": f"{c.vf:.3f}",
                 "ラミナ厚 [mm]": int(c.t_lam_mm),
                 "枚数": int(c.n_lam),
                 "有孔層総厚 [mm]": int(c.total_mm),
@@ -768,4 +795,4 @@ def _render_pareto_results(state) -> None:
     if errors:
         with st.expander(f"⚠️ エラー ({len(errors)} 件)", expanded=False):
             for c in errors[:10]:
-                st.text(f"d={c.d_mm}mm, p={c.p_mm}mm, {c.t_lam_mm}mm×{c.n_lam}枚: {c.error}")
+                st.text(f"d={c.d_mm}mm, N={c.N_holes}孔, {c.t_lam_mm}mm×{c.n_lam}枚: {c.error}")

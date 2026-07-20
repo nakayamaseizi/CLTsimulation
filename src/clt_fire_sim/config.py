@@ -91,6 +91,16 @@ class LayerConfig(BaseModel):
     slit_width_mm: float = Field(default=15.0, gt=0, description="スリット幅 [mm]")
     slit_depth_mm: float = Field(default=3.0, gt=0, description="スリット深さ [mm]")
     slit_pitch_mm: float = Field(default=30.0, gt=0, description="スリットピッチ（中心間距離）[mm]")
+    # ---- 孔・スリットの充填材 ----
+    hole_filler: str = Field(
+        default="air",
+        description=(
+            "孔・スリット内部の充填材。\n"
+            "\"air\"（デフォルト・空気孔）または MATERIAL_DB のキー"
+            "（例: \"kuntan\"=籾殻くん炭, \"momigara\"=籾殻）。\n"
+            "充填時は池畑式・対流限界モデルの代わりに充填材との並列混合則を使用。"
+        ),
+    )
     # ---- 接触熱抵抗（この層の非加熱面側界面） ----
     contact_resistance_m2KW: float = Field(
         default=0.0,

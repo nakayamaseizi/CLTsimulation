@@ -416,7 +416,14 @@ with tab_result:
                         bk = float(db.get("k_measured", 0.12))
                     if mt in ("perforated_wood", "perforated_wood_advanced", "slitted_wood"):
                         vf = float(getattr(lyr, "void_fraction", 0.0))
-                        return (1.0 - vf) * bk + vf * _AIR_K_RT
+                        # 孔・スリット充填材（"air" 以外は充填材の室温λを使用）
+                        _fill = getattr(lyr, "hole_filler", "air")
+                        if _fill and _fill != "air":
+                            _fdb = _MDB.get(_fill, {})
+                            k_void = float(_fdb.get("k_measured", _fdb.get("k", _AIR_K_RT)))
+                        else:
+                            k_void = _AIR_K_RT
+                        return (1.0 - vf) * bk + vf * k_void
                     return bk
 
                 th_rows = []

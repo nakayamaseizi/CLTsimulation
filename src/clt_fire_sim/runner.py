@@ -284,9 +284,19 @@ def _build_layer_properties(layer):
     if mtype == "wood":
         return base_props
 
+    # 孔・スリットの充填材（"air" 以外なら MATERIAL_DB から物性値を生成）
+    filler_key = getattr(layer, "hole_filler", "air")
+    filler_props = (
+        make_properties(material=filler_key)
+        if filler_key and filler_key != "air"
+        else None
+    )
+
     if mtype == "perforated_wood":
         from .materials import PerforatedWoodProperties
-        return PerforatedWoodProperties(base_props, layer.void_fraction)
+        return PerforatedWoodProperties(
+            base_props, layer.void_fraction, filler_props=filler_props
+        )
 
     if mtype == "perforated_wood_advanced":
         return PerforatedWoodAdvanced(
@@ -295,6 +305,7 @@ def _build_layer_properties(layer):
             hole_diameter_mm=layer.hole_diameter_mm,
             hole_depth_mm=layer.hole_depth_mm,
             layer_thickness_mm=layer.thickness_mm,
+            filler_props=filler_props,
         )
 
     if mtype == "slitted_wood":
@@ -304,6 +315,7 @@ def _build_layer_properties(layer):
             slit_depth_mm=layer.slit_depth_mm,
             slit_pitch_mm=layer.slit_pitch_mm,
             layer_thickness_mm=layer.thickness_mm,
+            filler_props=filler_props,
         )
 
     raise ValueError(

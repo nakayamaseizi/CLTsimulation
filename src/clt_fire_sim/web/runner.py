@@ -301,8 +301,25 @@ def _run_simulation_thread(
             void_mask = _build_void_mask_3d(spec, layer_thicknesses_m, mesh)
             if void_mask is not None:
                 _log(f"void_mask生成: 有孔セル {int(void_mask.sum())} / {mesh.nx*mesh.ny*mesh.nz}")
+
+            # 孔・スリットの充填材（最初に見つかった "air" 以外を全 void セルに適用）
+            void_props = None
+            _filler_keys = [
+                getattr(la, "hole_filler", "air")
+                for la in spec.layers
+                if getattr(la, "material_type", "wood")
+                in ("perforated_wood", "perforated_wood_advanced", "slitted_wood")
+            ]
+            _fillers = [f for f in _filler_keys if f and f != "air"]
+            if _fillers and void_mask is not None:
+                from clt_fire_sim.materials import make_properties as _make_props
+                void_props = _make_props(material=_fillers[0])
+                _log(f"孔・スリット充填材: {_fillers[0]}（void セルに適用）")
+                if len(set(_fillers)) > 1:
+                    _log(f"⚠️ 複数の充填材が指定されています。'{_fillers[0]}' を全 void セルに適用します。")
+
             solver = FVM3DSolver(mesh, props, bc_left, bc_right, T_init=T_init,
-                                 void_mask=void_mask)
+                                 void_mask=void_mask, void_props=void_props)
 
         else:
             # ---- 1D メッシュ ----
