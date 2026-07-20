@@ -836,14 +836,14 @@ def _render_core5_tab() -> None:
     """5層CLT コア加工モードの UI。"""
     from clt_fire_sim.optimizer.pareto_optimizer import (
         get_core5_state, start_core5_optimization, stop_pareto,
-        generate_core5_candidates, CORE5_N_3D_MAX,
+        generate_core5_candidates, CORE5_N_3D_MAX, CORE5_TEMP_CRITERION,
         estimate_core5_3d_seconds, _core5_n_xy,
     )
 
     st.header("🏗️ 5層CLT コア加工の最適化")
     st.caption(
         "1層目・5層目は無加工スギ30mm、2〜4層目に同一の加工を施した"
-        " 5層CLT（総厚150mm）について、耐火性能（炭化深さ 最小化）と"
+        " 5層CLT（総厚150mm）について、耐火性能（**2層目裏面温度** 最小化）と"
         " 断熱性能（断熱抵抗R 最大化）のパレート最適解を探索します。"
     )
 
@@ -860,6 +860,8 @@ def _render_core5_tab() -> None:
 
 **千鳥配置**: 2・4層目に対し3層目は半ピッチずらし（スリットは90°回転）。
 空隙が厚み方向に貫通する経路を作らないため、1D等価モデルの前提が成立します。
+
+**耐火性能の評価点**: 加熱側から深さ **60mm**（2層目の裏面＝2層目と3層目の界面）の温度。
             """
         )
 
@@ -891,19 +893,38 @@ def _render_core5_tab() -> None:
         v2 = sorted(float(v) for v in sel["v2"]) or [cfg["v2"][1][0]]
         v3 = sorted(float(v) for v in sel["v3"]) or [cfg["v3"][1][0]]
 
-        col_t, col_n = st.columns(2)
-        t_end_min = col_t.number_input(
+        t_end_min = st.number_input(
             "加熱時間 [分]", min_value=30.0, max_value=180.0,
             value=60.0, step=15.0, key="core5_t_end",
         )
-        n_3d = col_n.slider(
-            "3D自動検証する解の数", min_value=0, max_value=12,
-            value=CORE5_N_3D_MAX, key="core5_n3d",
+
+        st.markdown("**🧊 3D 解析モード**")
+        _M3_LABELS = [
+            "フロント解のみ3D検証（推奨）",
+            "全候補を3Dで解析（高精度・長時間）",
+            "1Dのみ（3Dなし）",
+        ]
+        if st.session_state.get("core5_m3") not in _M3_LABELS:
+            st.session_state.pop("core5_m3", None)
+        m3_label = st.radio(
+            "3Dの適用範囲", _M3_LABELS, index=0, key="core5_m3",
             help=(
-                "パレートフロント上から等間隔に選び、千鳥配置3Dで自動検証します。0で無効。\n"
-                "3Dは1ケース1〜5分かかるため、増やすと大幅に時間が延びます。"
+                "**フロント解のみ**: 1Dで全探索し、パレート境界付近の解だけ千鳥3Dで検証。\n"
+                "**全候補**: すべての候補を3Dで解析し、パレート判定も3D値で行います。"
+                "最も正確ですが候補数×数分かかります。\n"
+                "**1Dのみ**: 3Dを行わず高速に傾向だけ見ます。"
             ),
         )
+        mode_3d = ("front" if m3_label.startswith("フロント")
+                   else "all" if m3_label.startswith("全候補") else "none")
+
+        n_3d = CORE5_N_3D_MAX
+        if mode_3d == "front":
+            n_3d = st.slider(
+                "3D検証する解の数", min_value=1, max_value=12,
+                value=CORE5_N_3D_MAX, key="core5_n3d",
+                help="パレートフロント上から R 軸に沿って等間隔に選びます。",
+            )
 
         # 候補数と所要時間の見積り
         try:
@@ -912,27 +933,43 @@ def _render_core5_tab() -> None:
             n_ext = sum(1 for c in cands if c.beyond_validated)
             n_excl = len(v1) * len(v2) * len(v3) - len(cands)
             est_1d = n_sim * 2.3
-            n3d_eff = min(int(n_3d), len(cands))
-            # 3D は候補ごとにコストが違うため、代表的な（時間のかかる）解で見積る
-            if n3d_eff and cands:
-                secs = sorted(estimate_core5_3d_seconds(c) for c in cands)
-                # フロント解は分散するので中央値〜上位の平均を採用
-                mid = secs[len(secs) // 2:]
-                est_3d = n3d_eff * float(np.mean(mid))
+            if mode_3d == "all":
+                # 全候補3D: 幾何が全て違うので重複除去は sim_key_3d ベース
+                uniq3d = {}
+                for c in cands:
+                    uniq3d[c.sim_key_3d] = c
+                n3d_eff = len(uniq3d)
+                est_3d = float(sum(estimate_core5_3d_seconds(c)
+                                   for c in uniq3d.values()))
+            elif mode_3d == "front":
+                n3d_eff = min(int(n_3d), len(cands))
+                # 3D は候補ごとにコストが違うため、代表的な（時間のかかる）解で見積る
+                if n3d_eff and cands:
+                    secs = sorted(estimate_core5_3d_seconds(c) for c in cands)
+                    mid = secs[len(secs) // 2:]
+                    est_3d = n3d_eff * float(np.mean(mid))
+                else:
+                    est_3d = 0.0
             else:
-                est_3d = 0.0
+                n3d_eff, est_3d = 0, 0.0
             est = est_1d + est_3d
             st.info(
                 f"有効な組み合わせ: **{len(cands)} 通り**（除外 {n_excl}）　|　"
                 f"1D探索: **{n_sim} 回** / 約 {est_1d/60:.0f} 分　|　"
-                f"3D検証: **{n3d_eff} 回** / 約 {est_3d/60:.0f} 分　|　"
+                f"3D: **{n3d_eff} 回** / 約 {est_3d/60:.0f} 分　|　"
                 f"**合計 約 {est/60:.0f} 分**"
                 + (f"　|　⚠️ 適用範囲外 {n_ext} 件" if n_ext else "")
             )
             if est_3d > 1800:
+                _hint = (
+                    "候補（孔径・ピッチ・深さ）を絞るか、"
+                    "「フロント解のみ3D検証」に切り替えると短縮できます。"
+                    if mode_3d == "all" else
+                    "検証数を減らすか、ピッチ/孔径の比が極端な候補を外すと短縮できます。"
+                )
                 st.warning(
-                    f"⚠️ 3D検証に約 {est_3d/60:.0f} 分かかる見込みです。"
-                    " 検証数を減らすか、ピッチ/孔径の比が極端な候補を外すと短縮できます。"
+                    f"⚠️ 3D解析に約 {est_3d/60:.0f} 分"
+                    f"（{est_3d/3600:.1f} 時間）かかる見込みです。{_hint}"
                 )
             if n_ext:
                 st.caption(
@@ -952,6 +989,7 @@ def _render_core5_tab() -> None:
             start_core5_optimization(
                 process_type=pt, v1_list=v1, v2_list=v2, v3_list=v3,
                 t_end_min=float(t_end_min), n_3d_max=int(n_3d),
+                mode_3d=mode_3d,
             )
             st.rerun()
     with col_stop:
@@ -961,12 +999,13 @@ def _render_core5_tab() -> None:
 
     # ── 進捗 ──────────────────────────────────────────────────────────
     if state.status == "running":
+        _p3 = "全候補3D解析" if getattr(state, "mode_3d", "") == "all" else "千鳥3D検証"
         if state.phase == "1d":
             st.progress(state.progress,
                         f"フェーズ1/2 · 1D探索: {state.done}/{state.total}")
         else:
             st.progress(state.progress,
-                        f"フェーズ2/2 · 千鳥3D検証: {state.done_3d}/{state.total_3d}")
+                        f"フェーズ2/2 · {_p3}: {state.done_3d}/{state.total_3d}")
         st.caption(f"経過 {state.elapsed_s:.0f} 秒")
         st.rerun()
 
@@ -980,18 +1019,31 @@ def _render_core5_results(state) -> None:
     import plotly.graph_objects as go
     import pandas as pd
 
+    from clt_fire_sim.optimizer.pareto_optimizer import CORE5_TEMP_CRITERION
+
     valid = [c for c in state.candidates
-             if c.char_depth < float("inf") and not c.error]
+             if np.isfinite(c.T_iface) and not c.error]
     front = state.pareto_front
     if not valid:
         st.warning("有効な結果がありません。")
         return
 
-    n_ver = sum(1 for c in front if c.verified_3d)
-    st.success(
-        f"完了: {len(valid)} 候補を評価 → パレート最適解 **{len(front)} 点**"
-        + (f"（うち **{n_ver} 点**を千鳥3Dで検証）" if n_ver else "")
-    )
+    front_is_3d = bool(getattr(state, "front_is_3d", False))
+    n_ver = sum(1 for c in valid if c.verified_3d)
+    if front_is_3d:
+        st.success(
+            f"完了: {len(valid)} 候補を評価（**全候補を千鳥3Dで解析**）→ "
+            f"パレート最適解 **{len(front)} 点**（3D値で判定）"
+        )
+    else:
+        st.success(
+            f"完了: {len(valid)} 候補を評価 → パレート最適解 **{len(front)} 点**"
+            + (f"（うち **{n_ver} 点**を千鳥3Dで検証）" if n_ver else "")
+        )
+
+    # 全候補3Dならプロットは3D値、そうでなければ1D値を主軸にする
+    def _y(c) -> float:
+        return c.T_iface_3d if front_is_3d else c.T_iface
 
     is_hole = state.process_type == "hole"
     lbl_v1 = "孔径 Φ" if is_hole else "スリット幅 W"
@@ -1004,91 +1056,154 @@ def _render_core5_results(state) -> None:
     palette = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350",
                "#AB47BC", "#26C6DA", "#8D6E63", "#D4E157"]
     for i, v1 in enumerate(uniq_v1):
-        pts = [c for c in valid if c.d_mm == v1]
+        pts = [c for c in valid if c.d_mm == v1 and np.isfinite(_y(c))]
+        if not pts:
+            continue
         fig.add_trace(go.Scatter(
-            x=[c.R_value for c in pts], y=[c.char_depth for c in pts],
+            x=[c.R_value for c in pts], y=[_y(c) for c in pts],
             mode="markers",
             marker=dict(color=palette[i % len(palette)], size=9, opacity=0.7,
                         line=dict(width=0.7, color="white")),
             name=f"{lbl_v1}={v1:g}mm",
             customdata=np.column_stack([
                 [c.pitch_mm for c in pts], [c.depth_mm for c in pts],
-                [c.vf for c in pts], [c.T_unexposed for c in pts],
+                [c.vf for c in pts], [c.char_depth for c in pts],
+                [c.T_unexposed for c in pts],
             ]),
             hovertemplate=(
                 f"<b>{lbl_v1}={v1:g}mm</b><br>"
                 f"{lbl_v2}=%{{customdata[0]:.0f}}mm / {lbl_v3}=%{{customdata[1]:.0f}}mm<br>"
-                "開孔率=%{customdata[2]:.3f} | 裏面温度=%{customdata[3]:.1f}°C<br>"
-                "R=%{x:.3f} m²K/W | 炭化深さ=%{y:.1f}mm<extra></extra>"
+                "開孔率=%{customdata[2]:.3f}<br>"
+                "R=%{x:.3f} m²K/W | <b>2層目裏面=%{y:.1f}°C</b><br>"
+                "炭化深さ=%{customdata[3]:.1f}mm | 非加熱面=%{customdata[4]:.1f}°C"
+                "<extra></extra>"
             ),
         ))
 
     if front:
         fs = sorted(front, key=lambda c: c.R_value)
         fig.add_trace(go.Scatter(
-            x=[c.R_value for c in fs], y=[c.char_depth for c in fs],
-            mode="markers+lines", name="★ パレート最適解",
+            x=[c.R_value for c in fs], y=[_y(c) for c in fs],
+            mode="markers+lines",
+            name="★ パレート最適解" + ("（3D）" if front_is_3d else ""),
             marker=dict(color="crimson", size=13, symbol="star",
                         line=dict(width=1, color="darkred")),
             line=dict(color="crimson", width=1.5),
             hoverinfo="skip",
         ))
-        ver = [c for c in fs if c.verified_3d]
-        if ver:
-            fig.add_trace(go.Scatter(
-                x=[c.R_value for c in ver], y=[c.char_depth_3d for c in ver],
-                mode="markers", name="◆ 3D検証値",
-                marker=dict(color="black", size=11, symbol="diamond-open",
-                            line=dict(width=2)),
-                customdata=np.column_stack([
-                    [c.char_depth_1d_matched for c in ver],
-                    [c.effect_3d for c in ver],
-                ]),
-                hovertemplate=(
-                    "<b>3D検証</b><br>同解像度1D=%{customdata[0]:.1f}mm → "
-                    "3D=%{y:.1f}mm<br>真の3D効果=%{customdata[1]:+.1f}mm"
-                    "<extra></extra>"
-                ),
-            ))
+        # フロント検証モードのときだけ 1D→3D の対比を重ねる
+        if not front_is_3d:
+            ver = [c for c in fs if c.verified_3d]
+            if ver:
+                fig.add_trace(go.Scatter(
+                    x=[c.R_value for c in ver],
+                    y=[c.T_iface_3d for c in ver],
+                    mode="markers", name="◆ 3D検証値",
+                    marker=dict(color="black", size=11, symbol="diamond-open",
+                                line=dict(width=2)),
+                    customdata=np.column_stack([
+                        [c.T_iface_1d_matched for c in ver],
+                        [c.effect_3d for c in ver],
+                    ]),
+                    hovertemplate=(
+                        "<b>3D検証</b><br>同解像度1D=%{customdata[0]:.1f}°C → "
+                        "3D=%{y:.1f}°C<br>真の3D効果=%{customdata[1]:+.1f}°C"
+                        "<extra></extra>"
+                    ),
+                ))
 
-    # 30mm（1層目を貫通＝コア加工層に到達）の基準線
+    # ── 無加工5層CLT（比較基準）─────────────────────────────────────
+    ref = (getattr(state, "reference_3d", None) if front_is_3d
+           else getattr(state, "reference", None))
+    if ref is None:
+        ref = getattr(state, "reference", None)
+    if ref is not None and np.isfinite(ref.T_iface):
+        fig.add_trace(go.Scatter(
+            x=[ref.R_value], y=[ref.T_iface],
+            mode="markers", name="■ 無加工5層CLT（基準）",
+            marker=dict(color="#37474F", size=15, symbol="square",
+                        line=dict(width=1.5, color="white")),
+            customdata=[[ref.char_depth, ref.T_unexposed]],
+            hovertemplate=(
+                "<b>無加工5層CLT スギ150mm</b><br>"
+                "R=%{x:.3f} m²K/W | <b>2層目裏面=%{y:.1f}°C</b><br>"
+                "炭化深さ=%{customdata[0]:.1f}mm | 非加熱面=%{customdata[1]:.1f}°C"
+                "<extra></extra>"
+            ),
+        ))
+
+    # ── 基準線 ────────────────────────────────────────────────────────
+    ys = [_y(c) for c in valid if np.isfinite(_y(c))]
     r_min = min(c.R_value for c in valid)
     r_max = max(c.R_value for c in valid)
-    fig.add_shape(type="line", x0=r_min, x1=r_max, y0=30, y1=30,
-                  line=dict(color="darkorange", width=1.5, dash="dash"))
-    fig.add_annotation(x=r_max, y=30, text="30mm（加工層に到達）",
-                       showarrow=False, xanchor="right", yanchor="bottom",
-                       font=dict(color="darkorange", size=11))
+    if ref is not None and np.isfinite(ref.R_value):
+        r_min = min(r_min, ref.R_value)
+        r_max = max(r_max, ref.R_value)
+    _pad = (r_max - r_min) * 0.03 or 0.01
+    fig.add_shape(
+        type="line", x0=r_min - _pad, x1=r_max + _pad,
+        y0=CORE5_TEMP_CRITERION, y1=CORE5_TEMP_CRITERION,
+        line=dict(color="darkorange", width=2, dash="dash"),
+    )
+    fig.add_annotation(
+        x=r_max + _pad, y=CORE5_TEMP_CRITERION,
+        text=f"{CORE5_TEMP_CRITERION:.0f}°C 基準",
+        showarrow=False, xanchor="right", yanchor="bottom",
+        font=dict(color="darkorange", size=12),
+    )
 
+    _src = "3D" if front_is_3d else "1D"
     fig.update_layout(
-        title=f"パレートフロント：断熱性能 vs 耐火性能（加熱{state.t_end_min:.0f}分）",
+        title=(f"パレートフロント：断熱性能 vs 耐火性能"
+               f"（加熱{state.t_end_min:.0f}分・{_src}）"),
         xaxis_title="断熱抵抗 R [m²·K/W]（大きいほど断熱性能↑）",
-        yaxis_title="炭化深さ [mm]（小さいほど耐火性能↑）",
+        yaxis_title="2層目裏面温度（深さ60mm）[°C]（小さいほど耐火性能↑）",
         height=560,
         legend=dict(x=1.02, y=1.0, bgcolor="rgba(255,255,255,0.85)",
                     bordercolor="lightgray", borderwidth=1),
-        margin=dict(r=200),
+        margin=dict(r=210),
     )
     st.plotly_chart(fig, use_container_width=True)
+    _cap = "★ = パレート最適解　|　■ = 無加工5層CLT（基準）　|　"
+    if not front_is_3d and n_ver:
+        _cap += "◆ = 千鳥配置3Dによる検証値　|　"
     st.caption(
-        "★ = パレート最適解　|　◆ = 千鳥配置3Dによる検証値　|　"
+        _cap + f"橙破線 = {CORE5_TEMP_CRITERION:.0f}°C 基準　|　"
         "左下に近いほど「耐火・断熱とも優秀」"
     )
+    if ys and min(ys) > CORE5_TEMP_CRITERION:
+        st.warning(
+            f"⚠️ すべての候補が {CORE5_TEMP_CRITERION:.0f}°C を超えています。"
+            "加熱時間を短くするか、加工を控えめ（開孔率を下げる／深さを浅く）に"
+            "してください。"
+        )
 
     # ── パレート解テーブル ────────────────────────────────────────────
     st.subheader("✅ パレート最適解一覧")
     rows = []
-    for c in sorted(front, key=lambda x: x.char_depth):
+    if ref is not None and np.isfinite(ref.T_iface):
+        rows.append({
+            f"{lbl_v1} [mm]": "—", f"{lbl_v2} [mm]": "—",
+            f"{lbl_v3} [mm]": "—", "開孔率": "0.000",
+            "2層目裏面 1D [°C]": f"{ref.T_iface:.1f}",
+            "2層目裏面 3D [°C]": "—", "3D効果 [°C]": "—",
+            "断熱抵抗 R [m²K/W]": f"{ref.R_value:.4f}",
+            "100°C判定": "✓" if ref.T_iface <= CORE5_TEMP_CRITERION else "✗",
+            "炭化深さ [mm]": f"{ref.char_depth:.1f}",
+            "適用範囲": "基準（無加工5層CLT）",
+        })
+    for c in sorted(front, key=lambda x: (x.T_iface_eff, -x.R_value)):
         rows.append({
             f"{lbl_v1} [mm]": f"{c.d_mm:g}",
             f"{lbl_v2} [mm]": f"{c.pitch_mm:g}",
             f"{lbl_v3} [mm]": f"{c.depth_mm:g}",
             "開孔率": f"{c.vf:.3f}",
-            "炭化深さ 1D [mm]": f"{c.char_depth:.1f}",
-            "炭化深さ 3D [mm]": (f"{c.char_depth_3d:.1f}" if c.verified_3d else "—"),
-            "3D効果 [mm]": (f"{c.effect_3d:+.1f}" if c.verified_3d else "—"),
+            "2層目裏面 1D [°C]": f"{c.T_iface:.1f}",
+            "2層目裏面 3D [°C]": (f"{c.T_iface_3d:.1f}" if c.verified_3d else "—"),
+            "3D効果 [°C]": (f"{c.effect_3d:+.1f}" if c.verified_3d else "—"),
             "断熱抵抗 R [m²K/W]": f"{c.R_value:.4f}",
-            "裏面温度 [°C]": f"{c.T_unexposed:.1f}",
+            "100°C判定": "✓" if c.T_iface_eff <= CORE5_TEMP_CRITERION else "✗",
+            "炭化深さ [mm]": f"{c.char_depth:.1f}",
             "適用範囲": "⚠️外挿" if c.beyond_validated else "✓",
         })
     df = pd.DataFrame(rows)
@@ -1100,32 +1215,35 @@ def _render_core5_results(state) -> None:
         mime="text/csv",
     )
 
-    ver_list = [c for c in front if c.verified_3d]
+    ver_list = [c for c in valid if c.verified_3d and np.isfinite(c.effect_3d)]
     if ver_list:
         eff = [c.effect_3d for c in ver_list]
         st.info(
-            f"**3D検証の要約**: 千鳥配置による真の3D効果は "
-            f"{min(eff):+.1f} 〜 {max(eff):+.1f} mm（平均 {np.mean(eff):+.1f} mm）。"
-            " 正の値は1Dが炭化を浅く見積もる＝耐火性能を過大評価していることを意味します。"
+            f"**3D効果の要約**（{len(ver_list)} 点）: 千鳥配置による真の3D効果は "
+            f"{min(eff):+.1f} 〜 {max(eff):+.1f} °C（平均 {np.mean(eff):+.1f} °C）。"
+            " 正の値は1Dが2層目裏面温度を低く見積もる＝耐火性能を過大評価"
+            "（危険側）していることを意味します。"
         )
         st.caption(
-            "**「3D効果」の定義**: 炭化深さは x方向メッシュに敏感（層あたり "
-            "n=5 と n=12 で 1〜2mm 変わる）なため、3D検証（n=5）と "
-            "**同一解像度の1D**との差を取っています。表の「炭化深さ 1D」は"
-            "探索に用いた細メッシュ（n=12）の値なので、3D列との単純差には"
-            "メッシュ解像度の影響が含まれます。"
+            "**「3D効果」の定義**: 3D解析（層あたり n=5）と**同一x解像度の1D**"
+            "との差を取っています。表の「2層目裏面 1D」は探索に用いた細メッシュ"
+            "（n=12）の値なので、3D列との単純差にはメッシュ解像度の影響が"
+            "含まれます。"
         )
 
     # ── 全候補 ────────────────────────────────────────────────────────
     with st.expander("📋 全候補一覧", expanded=False):
         rows_all = []
-        for c in sorted(valid, key=lambda x: (x.char_depth, -x.R_value)):
+        for c in sorted(valid, key=lambda x: (x.T_iface_eff, -x.R_value)):
             rows_all.append({
                 f"{lbl_v1}": f"{c.d_mm:g}", f"{lbl_v2}": f"{c.pitch_mm:g}",
                 f"{lbl_v3}": f"{c.depth_mm:g}", "開孔率": f"{c.vf:.3f}",
-                "炭化深さ [mm]": f"{c.char_depth:.1f}",
+                "2層目裏面 [°C]": f"{c.T_iface:.1f}",
+                "2層目裏面 3D [°C]": (f"{c.T_iface_3d:.1f}" if c.verified_3d else "—"),
                 "R [m²K/W]": f"{c.R_value:.4f}",
-                "裏面温度 [°C]": f"{c.T_unexposed:.1f}",
+                "100°C": "✓" if c.T_iface_eff <= CORE5_TEMP_CRITERION else "✗",
+                "炭化深さ [mm]": f"{c.char_depth:.1f}",
+                "非加熱面 [°C]": f"{c.T_unexposed:.1f}",
                 "適用範囲": "⚠️" if c.beyond_validated else "✓",
                 "★": "★" if c.is_pareto else "",
             })

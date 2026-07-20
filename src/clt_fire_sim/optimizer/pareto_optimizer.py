@@ -632,6 +632,12 @@ def get_default_N_list() -> list[int]:
 _CORE5_LAYER_MM: float = 30.0   # 各層厚 [mm]
 _CORE5_RHO: float = 400.0       # スギ密度 [kg/m³]
 _CORE5_MC: float = 0.12         # 含水率
+
+# F1 の評価深さ [mm]：加熱側から 2 層目の裏面（2層目と3層目の界面）
+# 構成 [1:無加工30][2:加工30][3:加工30][4:加工30][5:無加工30] の 30+30=60mm
+_CORE5_EVAL_DEPTH_MM: float = 60.0
+# 耐火性能の判定基準温度 [°C]（グラフの基準線）
+CORE5_TEMP_CRITERION: float = 100.0
 CORE5_N_3D_MAX: int = 5         # 3D 自動検証するフロント解の既定数
 CORE5_N_X_1D: int = 12          # 1D 探索の層あたり x セル数
 CORE5_N_X_3D: int = 5           # 3D 検証の層あたり x セル数
@@ -669,10 +675,13 @@ class Core5Candidate:
 
     vf: float = field(init=False)             # 断面開孔率
     beyond_validated: bool = field(init=False)  # 実験式の裏付け範囲外か
-    char_depth: float = float("inf")          # F1: 炭化深さ(300°C)@加熱終了 [mm]（1D・細メッシュ）
-    char_depth_3d: float = float("nan")       # 3D検証値（フロント解のみ）
-    char_depth_1d_matched: float = float("nan")  # 3Dと同一x解像度の1D（差分の基準）
+    # F1: 加熱側から2層目裏面（深さ60mm）の温度 @加熱終了 [°C]
+    T_iface: float = float("inf")             # 1D・細メッシュ
+    T_iface_3d: float = float("nan")          # 3D検証値
+    T_iface_1d_matched: float = float("nan")  # 3Dと同一x解像度の1D（差分の基準）
     R_value: float = 0.0                      # F2: 全層の室温断熱抵抗 [m²K/W]
+    char_depth: float = float("nan")          # 参考: 炭化深さ(300°C) [mm]
+    char_depth_3d: float = float("nan")       # 参考: 3D の炭化深さ [mm]
     T_unexposed: float = float("nan")         # 参考: 非加熱面温度 [°C]
     T_unexposed_3d: float = float("nan")      # 参考: 3D の非加熱面温度 [°C]
     is_pareto: bool = False
@@ -707,15 +716,32 @@ class Core5Candidate:
         return ("slit", round(self.vf, 4), float(self.depth_mm))
 
     @property
-    def effect_3d(self) -> float:
-        """真の3D効果 [mm]（同一x解像度の1Dとの差）。
+    def sim_key_3d(self) -> tuple:
+        """3D結果の共有キー。
 
-        char_depth（細メッシュ1D）との単純差はメッシュ解像度差を含むため、
+        3D は void_mask の形状がそのまま効くため、1D と違って
+        幾何パラメータ 3 つすべてを区別する必要がある。
+        """
+        return (self.process_type, float(self.d_mm),
+                float(self.pitch_mm), float(self.depth_mm))
+
+    @property
+    def effect_3d(self) -> float:
+        """真の3D効果 [°C]（同一x解像度の1Dとの差）。
+
+        T_iface（細メッシュ1D）との単純差はメッシュ解像度差を含むため、
         3D検証と同じ x セル数で走らせた 1D を基準に取る。
         """
-        if not self.verified_3d or np.isnan(self.char_depth_1d_matched):
+        if not self.verified_3d or np.isnan(self.T_iface_1d_matched):
             return float("nan")
-        return self.char_depth_3d - self.char_depth_1d_matched
+        return self.T_iface_3d - self.T_iface_1d_matched
+
+    @property
+    def T_iface_eff(self) -> float:
+        """表示・判定に使う F1（3D検証済みならその値、なければ1D）。"""
+        if self.verified_3d and np.isfinite(self.T_iface_3d):
+            return self.T_iface_3d
+        return self.T_iface
 
     @property
     def label(self) -> str:
@@ -739,6 +765,10 @@ class Core5OptState:
     error_msg: str = ""
     process_type: str = "hole"
     t_end_min: float = 60.0
+    mode_3d: str = "front"                       # "front" | "all" | "none"
+    front_is_3d: bool = False                    # フロントを3D値で判定したか
+    reference: "Core5Reference | None" = None    # 無加工5層CLT（1D細メッシュ）
+    reference_3d: "Core5Reference | None" = None  # 3Dと同一x解像度の基準
 
     @property
     def progress(self) -> float:
@@ -807,6 +837,18 @@ def _build_core5_proc_props(c: Core5Candidate):
     return base, proc
 
 
+def _temp_at_depth(
+    x_centers_m: np.ndarray, T_row: np.ndarray, depth_mm: float,
+) -> float:
+    """指定深さにおける温度 [°C] を線形補間で求める。
+
+    セル中心の温度分布を線形補間するため、メッシュ解像度が変わっても
+    同じ物理位置の温度を比較できる（炭化深さのようなメッシュ敏感性がない）。
+    """
+    x_mm = np.asarray(x_centers_m, dtype=float) * 1000.0
+    return float(np.interp(float(depth_mm), x_mm, np.asarray(T_row, dtype=float)))
+
+
 def _char_depth_mm(x_centers_m: np.ndarray, T_row: np.ndarray) -> float:
     """300°C 等温線の深さ [mm] を線形補間で求める。
 
@@ -828,27 +870,25 @@ def _char_depth_mm(x_centers_m: np.ndarray, T_row: np.ndarray) -> float:
     return float(x0 + (T0 - 300.0) / (T0 - T1) * (x1 - x0))
 
 
-def _run_sim_core5_1d(
-    c: Core5Candidate,
+def _solve_core5_1d(
+    props_list: list,
     t_end_min: float,
-    n_cells: int = 12,
+    n_cells: int,
 ) -> tuple[float, float, float]:
-    """1ケースの1Dシミュレーション。
+    """5層構成の1Dソルバーを走らせ、評価量を返す。
 
     Returns
     -------
-    (char_depth_mm, T_unexposed, R_value)
-        炭化深さ [mm]、非加熱面温度 [°C]、室温断熱抵抗 [m²K/W]。
+    (T_iface, char_depth_mm, T_unexposed)
+        2層目裏面(深さ60mm)温度 [°C]、炭化深さ [mm]、非加熱面温度 [°C]。
     """
     from clt_fire_sim.boundary import ISO834HeatedBC, ConvRadCoolingBC
     from clt_fire_sim.solver.fvm_1d import (
         FVM1DSolver, MultiLayerProperties, make_multi_layer_mesh,
     )
 
-    base, proc = _build_core5_proc_props(c)
     t_m = _CORE5_LAYER_MM / 1000.0
     thicknesses = [t_m] * 5
-    props_list = [base, proc, proc, proc, base]
 
     mesh = make_multi_layer_mesh(thicknesses, n_cells_per_layer=n_cells, ratio=1.05)
     props = MultiLayerProperties(thicknesses, props_list)
@@ -865,15 +905,71 @@ def _run_sim_core5_1d(
 
     temps = result["temperatures"]
     idx_t = int(np.argmin(np.abs(result["times"] / 60.0 - t_end_min)))
-    T_unexposed = float(temps[idx_t, -1])
-    char_mm = _char_depth_mm(mesh.x_centers, temps[idx_t])
+    row = temps[idx_t]
+    return (
+        _temp_at_depth(mesh.x_centers, row, _CORE5_EVAL_DEPTH_MM),
+        _char_depth_mm(mesh.x_centers, row),
+        float(row[-1]),
+    )
+
+
+def _run_sim_core5_1d(
+    c: Core5Candidate,
+    t_end_min: float,
+    n_cells: int = 12,
+) -> tuple[float, float, float, float]:
+    """1ケースの1Dシミュレーション。
+
+    Returns
+    -------
+    (T_iface, char_depth_mm, T_unexposed, R_value)
+        2層目裏面温度 [°C]、炭化深さ [mm]、非加熱面温度 [°C]、
+        室温断熱抵抗 [m²K/W]。
+    """
+    base, proc = _build_core5_proc_props(c)
+    T_iface, char_mm, T_unexposed = _solve_core5_1d(
+        [base, proc, proc, proc, base], t_end_min, n_cells,
+    )
 
     # 室温断熱抵抗（表面熱抵抗は含まない）
+    t_m = _CORE5_LAYER_MM / 1000.0
     k20 = np.array([20.0])
     k_proc = float(proc.get_k_array(k20)[0])
     k_base = float(base.get_k_array(k20)[0])
     R = 2.0 * t_m / k_base + 3.0 * t_m / k_proc
-    return char_mm, T_unexposed, R
+    return T_iface, char_mm, T_unexposed, R
+
+
+@dataclass
+class Core5Reference:
+    """比較基準：無加工の 5 層 5 プライ CLT（スギ 30mm×5 = 150mm）。"""
+    T_iface: float = float("nan")      # 2層目裏面温度 [°C]
+    char_depth: float = float("nan")   # 炭化深さ [mm]
+    T_unexposed: float = float("nan")  # 非加熱面温度 [°C]
+    R_value: float = float("nan")      # 室温断熱抵抗 [m²K/W]
+    n_cells: int = 0                   # 層あたり x セル数（比較の公平性用）
+
+
+def compute_core5_reference(
+    t_end_min: float = 60.0, n_cells: int = CORE5_N_X_1D,
+) -> Core5Reference:
+    """無加工5層CLTの基準値を計算する。
+
+    加工なしなので空隙がなく、1D と 3D は物理的に等価。
+    ただしメッシュ解像度の影響を除くため n_cells を明示的に受け取る。
+    """
+    from clt_fire_sim.materials import make_properties
+
+    base = make_properties("sugi", _CORE5_RHO, _CORE5_MC)
+    T_iface, char_mm, T_unexposed = _solve_core5_1d(
+        [base] * 5, t_end_min, n_cells,
+    )
+    t_m = _CORE5_LAYER_MM / 1000.0
+    k_base = float(base.get_k_array(np.array([20.0]))[0])
+    return Core5Reference(
+        T_iface=T_iface, char_depth=char_mm, T_unexposed=T_unexposed,
+        R_value=5.0 * t_m / k_base, n_cells=int(n_cells),
+    )
 
 
 def _build_core5_void_mask_3d(
@@ -960,8 +1056,9 @@ def _run_sim_core5_3d(
 
     Returns
     -------
-    (char_depth_mm, T_unexposed)
-        YZ平均温度分布から求めた炭化深さ [mm] と非加熱面温度 [°C]。
+    (T_iface, char_depth_mm, T_unexposed)
+        YZ平均温度分布から求めた 2層目裏面(深さ60mm)温度 [°C]、
+        炭化深さ [mm]、非加熱面温度 [°C]。
     """
     from clt_fire_sim.boundary import ISO834HeatedBC, ConvRadCoolingBC
     from clt_fire_sim.materials import make_properties
@@ -1005,13 +1102,25 @@ def _run_sim_core5_3d(
     nx, ny, nz = mesh.nx, mesh.ny, mesh.nz
     T_field = result["temperatures"][idx_t].reshape(nx, ny, nz)
     T_profile = T_field.mean(axis=(1, 2))  # YZ平均の厚み方向分布
-    char_mm = _char_depth_mm(mesh.x_centers, T_profile)
-    return char_mm, float(T_profile[-1])
+    return (
+        _temp_at_depth(mesh.x_centers, T_profile, _CORE5_EVAL_DEPTH_MM),
+        _char_depth_mm(mesh.x_centers, T_profile),
+        float(T_profile[-1]),
+    )
 
 
-def _compute_core5_front(cands: list[Core5Candidate]) -> list[Core5Candidate]:
-    """F1(炭化深さ)最小化 × F2(断熱抵抗R)最大化 の非支配解を返す。"""
-    sorted_c = sorted(cands, key=lambda c: (c.char_depth, -c.R_value))
+def _compute_core5_front(
+    cands: list[Core5Candidate], use_3d: bool = False,
+) -> list[Core5Candidate]:
+    """F1(2層目裏面温度)最小化 × F2(断熱抵抗R)最大化 の非支配解を返す。
+
+    use_3d=True の場合は 3D 検証値で判定する（全候補3Dモード用）。
+    """
+    def f1(c: Core5Candidate) -> float:
+        return c.T_iface_3d if use_3d else c.T_iface
+
+    usable = [c for c in cands if np.isfinite(f1(c))]
+    sorted_c = sorted(usable, key=lambda c: (f1(c), -c.R_value))
     front: list[Core5Candidate] = []
     best_r = -float("inf")
     for c in sorted_c:
@@ -1032,10 +1141,16 @@ def start_core5_optimization(
     n_cells_per_layer_3d: int = CORE5_N_X_3D,
     n_cells_xy_3d: int | None = None,
     n_3d_max: int = CORE5_N_3D_MAX,
+    mode_3d: str = "front",
 ) -> None:
     """5層コア加工CLTのパレート最適化をバックグラウンドで開始する。
 
-    1D 全列挙 → パレートフロント特定 → フロント解を千鳥3Dで自動検証。
+    Parameters
+    ----------
+    mode_3d : str
+        "front" : 1D全列挙 → フロント解のみ千鳥3Dで検証（既定）
+        "all"   : 1D全列挙 → **全候補**を千鳥3Dで解析し、フロントも3D値で判定
+        "none"  : 1Dのみ
     """
     global _core5_state
     with _lock:
@@ -1047,12 +1162,13 @@ def start_core5_optimization(
             status="running", phase="1d",
             total=len(candidates), candidates=candidates,
             process_type=process_type, t_end_min=t_end_min,
+            mode_3d=mode_3d,
         )
 
     t = threading.Thread(
         target=_run_core5_thread,
         args=(candidates, t_end_min, n_cells_1d,
-              n_cells_per_layer_3d, n_cells_xy_3d, n_3d_max),
+              n_cells_per_layer_3d, n_cells_xy_3d, n_3d_max, mode_3d),
         daemon=True, name="core5-opt-worker",
     )
     t.start()
@@ -1065,9 +1181,22 @@ def _run_core5_thread(
     n_cells_per_layer_3d: int,
     n_cells_xy_3d: int,
     n_3d_max: int,
+    mode_3d: str = "front",
 ) -> None:
     wall_start = time.monotonic()
     cache: dict = {}
+    cache_1d_matched: dict = {}
+
+    # ---- 比較基準（無加工5層CLT）----
+    try:
+        ref = compute_core5_reference(t_end_min, n_cells_1d)
+        ref3 = (compute_core5_reference(t_end_min, n_cells_per_layer_3d)
+                if mode_3d != "none" else None)
+        with _lock:
+            _core5_state.reference = ref
+            _core5_state.reference_3d = ref3
+    except Exception:
+        pass
 
     # ---- フェーズ1: 1D 全列挙 ----
     for c in candidates:
@@ -1076,55 +1205,77 @@ def _run_core5_thread(
         try:
             if c.sim_key not in cache:
                 cache[c.sim_key] = _run_sim_core5_1d(c, t_end_min, n_cells_1d)
-            c.char_depth, c.T_unexposed, c.R_value = cache[c.sim_key]
+            c.T_iface, c.char_depth, c.T_unexposed, c.R_value = cache[c.sim_key]
         except Exception as e:
             c.error = str(e)
         with _lock:
             _core5_state.done += 1
             _core5_state.elapsed_s = time.monotonic() - wall_start
 
-    valid = [c for c in candidates if c.char_depth < float("inf") and not c.error]
+    valid = [c for c in candidates if np.isfinite(c.T_iface) and not c.error]
     front = _compute_core5_front(valid)
 
-    # ---- フェーズ2: フロント解の千鳥3D自動検証 ----
+    # ---- フェーズ2: 千鳥3D解析 ----
     stopped = _stop_event.is_set()
-    if not stopped and front:
-        # フロントを R 軸に沿って等間隔に最大 n_3d_max 点選ぶ
-        front_sorted = sorted(front, key=lambda c: c.R_value)
-        if len(front_sorted) > n_3d_max:
-            idx = np.unique(np.round(
-                np.linspace(0, len(front_sorted) - 1, n_3d_max)
-            ).astype(int))
-            selected = [front_sorted[i] for i in idx]
+    if not stopped and valid and mode_3d != "none":
+        if mode_3d == "all":
+            selected = valid
+        elif front and n_3d_max > 0:
+            # フロントを R 軸に沿って等間隔に最大 n_3d_max 点選ぶ
+            front_sorted = sorted(front, key=lambda c: c.R_value)
+            if len(front_sorted) > n_3d_max:
+                idx = np.unique(np.round(
+                    np.linspace(0, len(front_sorted) - 1, n_3d_max)
+                ).astype(int))
+                selected = [front_sorted[i] for i in idx]
+            else:
+                selected = front_sorted
         else:
-            selected = front_sorted
+            selected = []
 
-        with _lock:
-            _core5_state.phase = "3d"
-            _core5_state.total_3d = len(selected)
-            _core5_state.pareto_front = front
-
-        for c in selected:
-            if _stop_event.is_set():
-                break
-            try:
-                c.char_depth_3d, c.T_unexposed_3d = _run_sim_core5_3d(
-                    c, t_end_min, n_cells_per_layer_3d, n_cells_xy_3d,
-                )
-                # 同一x解像度の1Dを併走させ、メッシュ差を除いた3D効果を得る
-                c.char_depth_1d_matched, _, _ = _run_sim_core5_1d(
-                    c, t_end_min, n_cells=n_cells_per_layer_3d,
-                )
-                c.verified_3d = True
-            except Exception as e:
-                c.error = f"3D: {e}"
+        if selected:
             with _lock:
-                _core5_state.done_3d += 1
-                _core5_state.elapsed_s = time.monotonic() - wall_start
+                _core5_state.phase = "3d"
+                _core5_state.total_3d = len(selected)
+                _core5_state.pareto_front = front
+
+            cache_3d: dict = {}
+            for c in selected:
+                if _stop_event.is_set():
+                    break
+                try:
+                    if c.sim_key_3d not in cache_3d:
+                        cache_3d[c.sim_key_3d] = _run_sim_core5_3d(
+                            c, t_end_min, n_cells_per_layer_3d, n_cells_xy_3d,
+                        )
+                    c.T_iface_3d, c.char_depth_3d, c.T_unexposed_3d = \
+                        cache_3d[c.sim_key_3d]
+                    # 同一x解像度の1Dを併走させ、メッシュ差を除いた3D効果を得る
+                    if c.sim_key not in cache_1d_matched:
+                        cache_1d_matched[c.sim_key] = _run_sim_core5_1d(
+                            c, t_end_min, n_cells=n_cells_per_layer_3d,
+                        )
+                    c.T_iface_1d_matched = cache_1d_matched[c.sim_key][0]
+                    c.verified_3d = True
+                except Exception as e:
+                    c.error = f"3D: {e}"
+                with _lock:
+                    _core5_state.done_3d += 1
+                    _core5_state.elapsed_s = time.monotonic() - wall_start
+
+    # ---- 全候補3Dならフロントを3D値で判定し直す ----
+    front_is_3d = False
+    verified = [c for c in valid if c.verified_3d and np.isfinite(c.T_iface_3d)]
+    if mode_3d == "all" and verified and not _stop_event.is_set():
+        for c in candidates:
+            c.is_pareto = False
+        front = _compute_core5_front(verified, use_3d=True)
+        front_is_3d = True
 
     with _lock:
         _core5_state.status = "stopped" if _stop_event.is_set() else "done"
         _core5_state.phase = ""
         _core5_state.candidates = candidates
         _core5_state.pareto_front = front
+        _core5_state.front_is_3d = front_is_3d
         _core5_state.elapsed_s = time.monotonic() - wall_start
