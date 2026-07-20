@@ -1011,6 +1011,14 @@ class PerforatedWoodProperties:
 # 有孔加工精密モデル（池畑実験式、2021）
 # ---------------------------------------------------------------------------
 
+# 池畑(2021)実験式の較正基準となる試験体面積 [mm²]
+# 表4.3.-5 の有孔加工ラミナ試験体は 300×300mm。(5-8) 式の N はこの試験体内の
+# 孔数であり、Ra1 を面積正規化された Ra に戻すには N を掛ける必要がある。
+# 論文の試験体から逆算した N: 10Φ27P→121(=11²), 18Φ52P→36(=6²) で
+# 正方格子 (300/P)² と一致することを確認済み。
+_IKEHATA_REF_AREA_MM2: float = 300.0 * 300.0
+
+
 def _ra1_ikehata(phi_mm: float, h_mm: float) -> float:
     """池畑(2021)の実験式によって孔一つの単位面積熱抵抗 Ra1 [m²K/W] を返す。
 
@@ -1050,10 +1058,33 @@ class PerforatedWoodAdvanced:
 
     【等価熱伝導率の導出】
     試験体単位面積あたりの等価熱抵抗:
-        R_eff = (1 - φ) · L/λ_wood(T) + φ · Ra1(Φ, H)
+        R_eff = (1 - φ) · L/λ_wood(T) + φ · Ra(Φ, H)
 
     ここで φ = 開孔率（孔の断面積 / 全断面積）、L = 孔深さ [m]。
     等価熱伝導率は L/R_eff として算出する。
+
+    【Ra と Ra1 の区別（重要）】
+    池畑(2021)の (5-13) 式が与える Ra1 は「孔**一つ**当たり」の熱抵抗である。
+    面積正規化された開孔部熱抵抗 Ra は同論文 (4-3)・(5-8) 式より
+
+        Ra = Ra1 × N          N = 較正試験体(300×300mm)内の孔数
+
+    として求まる。N は開孔率と孔径から N = A_ref・φ / (π(Φ/2)²) で算出する。
+    N を掛け忘れると孔の熱抵抗が 2〜3 桁過小になり、孔が「熱の近道」として
+    扱われて有孔層の等価熱伝導率が無垢材を上回る（非物理）。
+
+    Ra が示強量である傍証として、開孔率を約10%に揃えた論文の3試験体では
+    Ra1 が 33 倍ばらつくのに対し Ra はほぼ一定になる:
+        H=18mm : 3Φ→0.234, 10Φ→0.209, 18Φ→0.185 [m²K/W]
+    較正点 10Φ27P/H18 で Ra=0.209（論文グラフからの実測換算 0.202）と一致し、
+    木材18mm(0.180) < Ra < 静止空気18mm(0.600) の妥当な範囲に収まる。
+
+    【適用範囲の注意】
+    論文の較正試験体は開孔率が約10%（3Φ8P/10Φ27P/18Φ52P）のみである。
+    (5-8) の分解では N ∝ φ となるため孔の寄与は φ² に比例し、
+    開孔率が較正点から離れるほど外挿の不確かさが増す。特に φ < 約8% では
+    孔の熱抵抗が木材部を下回り、有孔層の等価λが無垢材をわずかに上回る
+    （P=40mm/Φ10 で k≈0.122 > 0.120）。低開孔率域の結果は参考値として扱うこと。
 
     【適用上の注意】
     - 孔は板の加熱面から非加熱面に向かって直線状に開けられる想定
@@ -1096,8 +1127,15 @@ class PerforatedWoodAdvanced:
         # 実験回帰式のため、充填材がある場合は適用外 → 並列混合則に切り替える
         self.filler = filler_props
 
-        # 池畑式による孔部熱抵抗
+        # 池畑式による孔一つ当たりの熱抵抗 Ra1 [m²K/W]（(5-13)式）
         self._ra1 = _ra1_ikehata(self.phi_mm, self.h_mm)
+        # 較正試験体(300×300mm)内の孔数 N = A_ref・φ / A_hole
+        _a_hole_mm2 = np.pi * (self.phi_mm / 2.0) ** 2
+        self.n_holes_ref = (
+            _IKEHATA_REF_AREA_MM2 * self.vf / _a_hole_mm2 if _a_hole_mm2 > 1e-9 else 0.0
+        )
+        # 面積正規化された開孔部熱抵抗 Ra = Ra1 × N [m²K/W]（(4-3)・(5-8)式）
+        self.ra = self._ra1 * self.n_holes_ref
         # 高温（炭化温度以上）・充填材使用時のフォールバック（並列混合則）
         self._fallback = PerforatedWoodProperties(base_props, self.vf, filler_props)
 
@@ -1124,16 +1162,10 @@ class PerforatedWoodAdvanced:
         k_wood = self.base.get_k_array(T)
         L_m = self.h_mm * 1e-3  # 孔深さ [m]
 
-        # 孔部の等価熱伝導率: k_hole = L / Ra1
-        k_hole = np.where(
-            self._ra1 > 1e-10,
-            L_m / self._ra1,
-            _AIR_K,
-        )
-
         # 孔深さ部分の等価 k（並列経路の合成）
-        # k_eff_holed = 1 / (R_eff / L) = L / ((1-φ)·L/k_wood + φ·Ra1)
-        denom = (1.0 - self.vf) * L_m / np.maximum(k_wood, 1e-10) + self.vf * self._ra1
+        # k_eff_holed = 1 / (R_eff / L) = L / ((1-φ)·L/k_wood + φ·Ra)
+        # ここで Ra = Ra1 × N（面積正規化された開孔部熱抵抗）
+        denom = (1.0 - self.vf) * L_m / np.maximum(k_wood, 1e-10) + self.vf * self.ra
         k_eff_holed = np.where(denom > 1e-10, L_m / denom, k_wood)
 
         # 孔なし部分（板厚のうち孔が届かない部分）との加重平均

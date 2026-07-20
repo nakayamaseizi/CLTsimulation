@@ -686,10 +686,17 @@ def _render_layer_editor() -> None:
                         _depth_note = (
                             f"φ_V = φ_A × H/t = {vf_adv*100:.1f}% × {h_v:.0f}/{t_v:.0f}"
                         )
+                    from clt_fire_sim.materials import _IKEHATA_REF_AREA_MM2
+                    _n_ref = (_IKEHATA_REF_AREA_MM2 * vf_adv
+                              / max(_math.pi * (phi_v / 2) ** 2, 1e-9))
                     st.caption(
                         f"↳ {_depth_note}　"
-                        f"等価密度 ≈ {rho_v * (1 - vf3d):.0f} kg/m³　"
-                        f"📐 池畑式 Ra1 = {ra1*1e4:.2f} × 10⁻⁴ m²K/W"
+                        f"等価密度 ≈ {rho_v * (1 - vf3d):.0f} kg/m³"
+                    )
+                    st.caption(
+                        f"📐 池畑式: Ra1 = {ra1*1e4:.2f}×10⁻⁴ m²K/W（孔1個）"
+                        f"　×　N = {_n_ref:.0f} 個（300×300mm 換算）"
+                        f"　→　**Ra = {ra1*_n_ref:.4f} m²K/W**（開孔部）"
                     )
                 except Exception:
                     pass
