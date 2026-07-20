@@ -15,6 +15,22 @@ import streamlit as st
 
 def render_pareto_tab() -> None:
     """パレート最適化タブを描画する。"""
+    # ── 解析対象の選択 ────────────────────────────────────────────────
+    _TARGETS = ["🛡️ 保護層 ＋ CLT（従来）", "🏗️ 5層CLT コア加工"]
+    if st.session_state.get("pareto_target") not in _TARGETS:
+        st.session_state.pop("pareto_target", None)
+    target = st.radio(
+        "解析対象",
+        _TARGETS,
+        index=0,
+        key="pareto_target",
+        horizontal=True,
+    )
+    st.divider()
+    if target.startswith("🏗️"):
+        _render_core5_tab()
+        return
+
     from clt_fire_sim.optimizer.pareto_optimizer import (
         get_default_d_list,
         get_default_N_list,
@@ -796,3 +812,334 @@ def _render_pareto_results(state) -> None:
         with st.expander(f"⚠️ エラー ({len(errors)} 件)", expanded=False):
             for c in errors[:10]:
                 st.text(f"d={c.d_mm}mm, N={c.N_holes}孔, {c.t_lam_mm}mm×{c.n_lam}枚: {c.error}")
+
+
+# ===========================================================================
+# 5層CLT コア加工モード
+# ===========================================================================
+
+_CORE5_PRESETS = {
+    "hole": {
+        "v1": ([3, 6, 10, 14, 18], [6, 10, 14], "🔵 孔径 Φ [mm]", "池畑式の適用範囲: 3〜18"),
+        "v2": ([20, 30, 40, 60], [20, 30, 40], "📐 ピッチ p [mm]", "孔の中心間距離（正方格子）"),
+        "v3": ([6, 12, 18, 24, 30], [12, 18, 24], "📏 孔深さ H [mm]", "適用範囲: 6〜30。層厚30mm以下"),
+    },
+    "slit": {
+        "v1": ([5, 10, 15, 20, 25], [10, 15, 20], "🔵 スリット幅 W [mm]", "池畑実測範囲: 5〜25"),
+        "v2": ([20, 30, 40, 60], [20, 30, 40], "📐 ピッチ P [mm]", "スリット中心間距離"),
+        "v3": ([3, 6, 9, 12], [3, 6, 9, 12], "📏 スリット深さ D [mm]", "実測裏付け: D≤12"),
+    },
+}
+
+
+def _render_core5_tab() -> None:
+    """5層CLT コア加工モードの UI。"""
+    from clt_fire_sim.optimizer.pareto_optimizer import (
+        get_core5_state, start_core5_optimization, stop_pareto,
+        generate_core5_candidates, CORE5_N_3D_MAX,
+        estimate_core5_3d_seconds, _core5_n_xy,
+    )
+
+    st.header("🏗️ 5層CLT コア加工の最適化")
+    st.caption(
+        "1層目・5層目は無加工スギ30mm、2〜4層目に同一の加工を施した"
+        " 5層CLT（総厚150mm）について、耐火性能（炭化深さ 最小化）と"
+        " 断熱性能（断熱抵抗R 最大化）のパレート最適解を探索します。"
+    )
+
+    with st.expander("📐 試験体構成（固定）", expanded=False):
+        st.markdown(
+            """
+| 層 | 構成 | 加工 |
+|---|---|---|
+| 1層目（火側） | スギ 30mm | 無加工 |
+| 2層目 | スギ 30mm | **加工あり** |
+| 3層目 | スギ 30mm | **加工あり**（千鳥） |
+| 4層目 | スギ 30mm | **加工あり** |
+| 5層目（非加熱側） | スギ 30mm | 無加工 |
+
+**千鳥配置**: 2・4層目に対し3層目は半ピッチずらし（スリットは90°回転）。
+空隙が厚み方向に貫通する経路を作らないため、1D等価モデルの前提が成立します。
+            """
+        )
+
+    # ── 加工タイプ ────────────────────────────────────────────────────
+    _PT_LABELS = ["🔬 有孔加工", "〰 スリット加工"]
+    if st.session_state.get("core5_pt") not in _PT_LABELS:
+        st.session_state.pop("core5_pt", None)
+    pt_label = st.radio("加工タイプ", _PT_LABELS, index=0,
+                        key="core5_pt", horizontal=True)
+    pt = "hole" if pt_label.startswith("🔬") else "slit"
+    cfg = _CORE5_PRESETS[pt]
+
+    # ── 探索パラメータ ────────────────────────────────────────────────
+    with st.expander("⚙️ 探索パラメータ設定", expanded=True):
+        cols = st.columns(3)
+        sel = {}
+        for col, key in zip(cols, ["v1", "v2", "v3"]):
+            opts, default, title, help_txt = cfg[key]
+            with col:
+                st.markdown(f"**{title}**")
+                sk = f"core5_{pt}_{key}"
+                if sk not in st.session_state:
+                    st.session_state[sk] = default
+                sel[key] = st.multiselect(
+                    "候補を選択", opts, key=sk, help=help_txt,
+                )
+
+        v1 = sorted(float(v) for v in sel["v1"]) or [cfg["v1"][1][0]]
+        v2 = sorted(float(v) for v in sel["v2"]) or [cfg["v2"][1][0]]
+        v3 = sorted(float(v) for v in sel["v3"]) or [cfg["v3"][1][0]]
+
+        col_t, col_n = st.columns(2)
+        t_end_min = col_t.number_input(
+            "加熱時間 [分]", min_value=30.0, max_value=180.0,
+            value=60.0, step=15.0, key="core5_t_end",
+        )
+        n_3d = col_n.slider(
+            "3D自動検証する解の数", min_value=0, max_value=12,
+            value=CORE5_N_3D_MAX, key="core5_n3d",
+            help=(
+                "パレートフロント上から等間隔に選び、千鳥配置3Dで自動検証します。0で無効。\n"
+                "3Dは1ケース1〜5分かかるため、増やすと大幅に時間が延びます。"
+            ),
+        )
+
+        # 候補数と所要時間の見積り
+        try:
+            cands = generate_core5_candidates(pt, v1, v2, v3)
+            n_sim = len(set(c.sim_key for c in cands))
+            n_ext = sum(1 for c in cands if c.beyond_validated)
+            n_excl = len(v1) * len(v2) * len(v3) - len(cands)
+            est_1d = n_sim * 2.3
+            n3d_eff = min(int(n_3d), len(cands))
+            # 3D は候補ごとにコストが違うため、代表的な（時間のかかる）解で見積る
+            if n3d_eff and cands:
+                secs = sorted(estimate_core5_3d_seconds(c) for c in cands)
+                # フロント解は分散するので中央値〜上位の平均を採用
+                mid = secs[len(secs) // 2:]
+                est_3d = n3d_eff * float(np.mean(mid))
+            else:
+                est_3d = 0.0
+            est = est_1d + est_3d
+            st.info(
+                f"有効な組み合わせ: **{len(cands)} 通り**（除外 {n_excl}）　|　"
+                f"1D探索: **{n_sim} 回** / 約 {est_1d/60:.0f} 分　|　"
+                f"3D検証: **{n3d_eff} 回** / 約 {est_3d/60:.0f} 分　|　"
+                f"**合計 約 {est/60:.0f} 分**"
+                + (f"　|　⚠️ 適用範囲外 {n_ext} 件" if n_ext else "")
+            )
+            if est_3d > 1800:
+                st.warning(
+                    f"⚠️ 3D検証に約 {est_3d/60:.0f} 分かかる見込みです。"
+                    " 検証数を減らすか、ピッチ/孔径の比が極端な候補を外すと短縮できます。"
+                )
+            if n_ext:
+                st.caption(
+                    "⚠️ 適用範囲外の候補は実験式の外挿となり、断熱性能を"
+                    "過大評価（危険側）する恐れがあります。結果表にマークが付きます。"
+                )
+        except Exception as e:
+            st.warning(f"候補生成エラー: {e}")
+            cands = []
+
+    # ── 実行・中断 ────────────────────────────────────────────────────
+    state = get_core5_state()
+    col_run, col_stop = st.columns([4, 1])
+    with col_run:
+        if st.button("🚀 最適化を実行", disabled=(state.status == "running"),
+                     use_container_width=True, key="core5_run"):
+            start_core5_optimization(
+                process_type=pt, v1_list=v1, v2_list=v2, v3_list=v3,
+                t_end_min=float(t_end_min), n_3d_max=int(n_3d),
+            )
+            st.rerun()
+    with col_stop:
+        if st.button("⏹ 中断", disabled=(state.status != "running"),
+                     use_container_width=True, key="core5_stop"):
+            stop_pareto()
+
+    # ── 進捗 ──────────────────────────────────────────────────────────
+    if state.status == "running":
+        if state.phase == "1d":
+            st.progress(state.progress,
+                        f"フェーズ1/2 · 1D探索: {state.done}/{state.total}")
+        else:
+            st.progress(state.progress,
+                        f"フェーズ2/2 · 千鳥3D検証: {state.done_3d}/{state.total_3d}")
+        st.caption(f"経過 {state.elapsed_s:.0f} 秒")
+        st.rerun()
+
+    # ── 結果 ──────────────────────────────────────────────────────────
+    if state.status in ("done", "stopped") and state.candidates:
+        _render_core5_results(state)
+
+
+def _render_core5_results(state) -> None:
+    """core5 の結果を描画する。"""
+    import plotly.graph_objects as go
+    import pandas as pd
+
+    valid = [c for c in state.candidates
+             if c.char_depth < float("inf") and not c.error]
+    front = state.pareto_front
+    if not valid:
+        st.warning("有効な結果がありません。")
+        return
+
+    n_ver = sum(1 for c in front if c.verified_3d)
+    st.success(
+        f"完了: {len(valid)} 候補を評価 → パレート最適解 **{len(front)} 点**"
+        + (f"（うち **{n_ver} 点**を千鳥3Dで検証）" if n_ver else "")
+    )
+
+    is_hole = state.process_type == "hole"
+    lbl_v1 = "孔径 Φ" if is_hole else "スリット幅 W"
+    lbl_v2 = "ピッチ p" if is_hole else "ピッチ P"
+    lbl_v3 = "孔深さ H" if is_hole else "スリット深さ D"
+
+    # ── 散布図 ────────────────────────────────────────────────────────
+    fig = go.Figure()
+    uniq_v1 = sorted(set(c.d_mm for c in valid))
+    palette = ["#42A5F5", "#66BB6A", "#FFA726", "#EF5350",
+               "#AB47BC", "#26C6DA", "#8D6E63", "#D4E157"]
+    for i, v1 in enumerate(uniq_v1):
+        pts = [c for c in valid if c.d_mm == v1]
+        fig.add_trace(go.Scatter(
+            x=[c.R_value for c in pts], y=[c.char_depth for c in pts],
+            mode="markers",
+            marker=dict(color=palette[i % len(palette)], size=9, opacity=0.7,
+                        line=dict(width=0.7, color="white")),
+            name=f"{lbl_v1}={v1:g}mm",
+            customdata=np.column_stack([
+                [c.pitch_mm for c in pts], [c.depth_mm for c in pts],
+                [c.vf for c in pts], [c.T_unexposed for c in pts],
+            ]),
+            hovertemplate=(
+                f"<b>{lbl_v1}={v1:g}mm</b><br>"
+                f"{lbl_v2}=%{{customdata[0]:.0f}}mm / {lbl_v3}=%{{customdata[1]:.0f}}mm<br>"
+                "開孔率=%{customdata[2]:.3f} | 裏面温度=%{customdata[3]:.1f}°C<br>"
+                "R=%{x:.3f} m²K/W | 炭化深さ=%{y:.1f}mm<extra></extra>"
+            ),
+        ))
+
+    if front:
+        fs = sorted(front, key=lambda c: c.R_value)
+        fig.add_trace(go.Scatter(
+            x=[c.R_value for c in fs], y=[c.char_depth for c in fs],
+            mode="markers+lines", name="★ パレート最適解",
+            marker=dict(color="crimson", size=13, symbol="star",
+                        line=dict(width=1, color="darkred")),
+            line=dict(color="crimson", width=1.5),
+            hoverinfo="skip",
+        ))
+        ver = [c for c in fs if c.verified_3d]
+        if ver:
+            fig.add_trace(go.Scatter(
+                x=[c.R_value for c in ver], y=[c.char_depth_3d for c in ver],
+                mode="markers", name="◆ 3D検証値",
+                marker=dict(color="black", size=11, symbol="diamond-open",
+                            line=dict(width=2)),
+                customdata=np.column_stack([
+                    [c.char_depth_1d_matched for c in ver],
+                    [c.effect_3d for c in ver],
+                ]),
+                hovertemplate=(
+                    "<b>3D検証</b><br>同解像度1D=%{customdata[0]:.1f}mm → "
+                    "3D=%{y:.1f}mm<br>真の3D効果=%{customdata[1]:+.1f}mm"
+                    "<extra></extra>"
+                ),
+            ))
+
+    # 30mm（1層目を貫通＝コア加工層に到達）の基準線
+    r_min = min(c.R_value for c in valid)
+    r_max = max(c.R_value for c in valid)
+    fig.add_shape(type="line", x0=r_min, x1=r_max, y0=30, y1=30,
+                  line=dict(color="darkorange", width=1.5, dash="dash"))
+    fig.add_annotation(x=r_max, y=30, text="30mm（加工層に到達）",
+                       showarrow=False, xanchor="right", yanchor="bottom",
+                       font=dict(color="darkorange", size=11))
+
+    fig.update_layout(
+        title=f"パレートフロント：断熱性能 vs 耐火性能（加熱{state.t_end_min:.0f}分）",
+        xaxis_title="断熱抵抗 R [m²·K/W]（大きいほど断熱性能↑）",
+        yaxis_title="炭化深さ [mm]（小さいほど耐火性能↑）",
+        height=560,
+        legend=dict(x=1.02, y=1.0, bgcolor="rgba(255,255,255,0.85)",
+                    bordercolor="lightgray", borderwidth=1),
+        margin=dict(r=200),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "★ = パレート最適解　|　◆ = 千鳥配置3Dによる検証値　|　"
+        "左下に近いほど「耐火・断熱とも優秀」"
+    )
+
+    # ── パレート解テーブル ────────────────────────────────────────────
+    st.subheader("✅ パレート最適解一覧")
+    rows = []
+    for c in sorted(front, key=lambda x: x.char_depth):
+        rows.append({
+            f"{lbl_v1} [mm]": f"{c.d_mm:g}",
+            f"{lbl_v2} [mm]": f"{c.pitch_mm:g}",
+            f"{lbl_v3} [mm]": f"{c.depth_mm:g}",
+            "開孔率": f"{c.vf:.3f}",
+            "炭化深さ 1D [mm]": f"{c.char_depth:.1f}",
+            "炭化深さ 3D [mm]": (f"{c.char_depth_3d:.1f}" if c.verified_3d else "—"),
+            "3D効果 [mm]": (f"{c.effect_3d:+.1f}" if c.verified_3d else "—"),
+            "断熱抵抗 R [m²K/W]": f"{c.R_value:.4f}",
+            "裏面温度 [°C]": f"{c.T_unexposed:.1f}",
+            "適用範囲": "⚠️外挿" if c.beyond_validated else "✓",
+        })
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.download_button(
+        "💾 パレート解 CSV",
+        data=df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"core5_pareto_{state.process_type}.csv",
+        mime="text/csv",
+    )
+
+    ver_list = [c for c in front if c.verified_3d]
+    if ver_list:
+        eff = [c.effect_3d for c in ver_list]
+        st.info(
+            f"**3D検証の要約**: 千鳥配置による真の3D効果は "
+            f"{min(eff):+.1f} 〜 {max(eff):+.1f} mm（平均 {np.mean(eff):+.1f} mm）。"
+            " 正の値は1Dが炭化を浅く見積もる＝耐火性能を過大評価していることを意味します。"
+        )
+        st.caption(
+            "**「3D効果」の定義**: 炭化深さは x方向メッシュに敏感（層あたり "
+            "n=5 と n=12 で 1〜2mm 変わる）なため、3D検証（n=5）と "
+            "**同一解像度の1D**との差を取っています。表の「炭化深さ 1D」は"
+            "探索に用いた細メッシュ（n=12）の値なので、3D列との単純差には"
+            "メッシュ解像度の影響が含まれます。"
+        )
+
+    # ── 全候補 ────────────────────────────────────────────────────────
+    with st.expander("📋 全候補一覧", expanded=False):
+        rows_all = []
+        for c in sorted(valid, key=lambda x: (x.char_depth, -x.R_value)):
+            rows_all.append({
+                f"{lbl_v1}": f"{c.d_mm:g}", f"{lbl_v2}": f"{c.pitch_mm:g}",
+                f"{lbl_v3}": f"{c.depth_mm:g}", "開孔率": f"{c.vf:.3f}",
+                "炭化深さ [mm]": f"{c.char_depth:.1f}",
+                "R [m²K/W]": f"{c.R_value:.4f}",
+                "裏面温度 [°C]": f"{c.T_unexposed:.1f}",
+                "適用範囲": "⚠️" if c.beyond_validated else "✓",
+                "★": "★" if c.is_pareto else "",
+            })
+        df_all = pd.DataFrame(rows_all)
+        st.dataframe(df_all, hide_index=True, use_container_width=True)
+        st.download_button(
+            "📥 全候補 CSV",
+            data=df_all.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"core5_all_{state.process_type}.csv",
+            mime="text/csv",
+        )
+
+    errs = [c for c in state.candidates if c.error]
+    if errs:
+        with st.expander(f"⚠️ エラー ({len(errs)} 件)", expanded=False):
+            for c in errs[:10]:
+                st.text(f"{c.label}: {c.error}")
