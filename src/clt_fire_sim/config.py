@@ -101,6 +101,17 @@ class LayerConfig(BaseModel):
             "充填時は池畑式・対流限界モデルの代わりに充填材との並列混合則を使用。"
         ),
     )
+    hole_filler_density_kg_m3: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "充填材のかさ密度 [kg/m³]。None の場合は材料既定値を使用。\n"
+            "籾殻・くん炭のようなばら材は詰め方でかさ密度が変わり"
+            "（緩い ~90 〜 圧縮 ~216 kg/m³）、"
+            "密度が高いほど空隙が減って熱伝導率が上昇する。\n"
+            "この値から室温 λ が自動算出される（適用範囲 90〜300 kg/m³）。"
+        ),
+    )
     # ---- 接触熱抵抗（この層の非加熱面側界面） ----
     contact_resistance_m2KW: float = Field(
         default=0.0,

@@ -420,7 +420,14 @@ with tab_result:
                         _fill = getattr(lyr, "hole_filler", "air")
                         if _fill and _fill != "air":
                             _fdb = _MDB.get(_fill, {})
-                            k_void = float(_fdb.get("k_measured", _fdb.get("k", _AIR_K_RT)))
+                            if _fdb.get("density_dependent_k"):
+                                # ばら材: 充填密度から室温λを算出
+                                from clt_fire_sim.materials import loose_fill_k_rt
+                                _fd = (getattr(lyr, "hole_filler_density_kg_m3", None)
+                                       or _fdb.get("rho_0", 150.0))
+                                k_void = float(loose_fill_k_rt(_fd))
+                            else:
+                                k_void = float(_fdb.get("k_measured", _fdb.get("k", _AIR_K_RT)))
                         else:
                             k_void = _AIR_K_RT
                         return (1.0 - vf) * bk + vf * k_void

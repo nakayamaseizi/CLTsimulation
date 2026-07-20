@@ -571,14 +571,19 @@ MATERIAL_DB: dict[str, dict] = {
     # ── 農業系副産物（籾殻・籾殻くん炭）───────────────────────────────
     "momigara": {
         "name": "籾殻（もみ殻・ばら充填）",
-        "rho_0": 130.0,        # ばら充填かさ密度 100〜160 kg/m³（Yarbrough et al. 2005: 154 kg/m³）
+        "rho_0": 130.0,        # 標準的なばら充填（緩い 90 〜 圧縮 216 kg/m³ の中間域）
         "moisture_content": 0.10,  # 平衡含水率 8〜12% の代表値
-        "k_measured": 0.050,   # Yarbrough et al.(2005) 実測 0.0464〜0.0566 W/mK @24°C の中央値
-        "standard": "Yarbrough et al. (2005) ORNL 実測値 λ=0.046〜0.057 W/mK",
+        # k_measured は指定しない：かさ密度から loose_fill_k_rt() で自動算出
+        "density_dependent_k": True,
+        "standard": "密度依存相関式（ρ=97→λ0.037, ρ=275→λ0.050）",
         "properties_type": "wood",
         "notes": (
-            "籾殻ばら充填層。熱伝導率は Yarbrough et al.(2005, Oak Ridge National "
-            "Laboratory) の実測値 0.0464〜0.0566 W/mK（24°C）の中央値 0.050 を採用。\n"
+            "籾殻ばら充填層。\n"
+            "【熱伝導率】かさ密度から相関式で算出（詰め方で断熱性能が変わる）。\n"
+            "  緩い 90 kg/m³ → λ≈0.037　標準 130 → λ≈0.039　圧縮 216 → λ≈0.046\n"
+            "  圧縮すると空隙が減り λ が上昇（断熱性能が低下）する。\n"
+            "【不確かさ】文献間のばらつきが大きい。Yarbrough et al.(2005) は "
+            "~154 kg/m³ で 0.046〜0.057 W/mK と本相関式（≈0.041）より高い値を報告。\n"
             "比熱は Eurocode 5 木材テーブル（20°C: 1530 J/kgK）を流用"
             "（Marques et al. 2020 の籾殻実測 1599 J/kgK @40°C とほぼ一致）。\n"
             "籾殻はシリカ（SiO₂）を 15〜20% 含み、燃焼後も断熱性の高い灰骨格が残る。"
@@ -589,19 +594,20 @@ MATERIAL_DB: dict[str, dict] = {
     },
     "kuntan": {
         "name": "籾殻くん炭（燻炭・炭化籾殻）",
-        "rho_0": 110.0,        # くん炭かさ密度 ~0.1 g/cm³（ばら充填）
+        "rho_0": 150.0,        # 炭化籾殻(CRH)の文献値 ~0.150 g/cm³
         "moisture_content": 0.0,
-        "k": 0.050,            # 炭化籾殻ばら材の文献値 0.040〜0.05 W/mK
-        "k_measured": 0.050,   # 室温表示用（app.py の λ 参照キー）
-        "standard": "文献値（炭化籾殻ばら材 λ≈0.04〜0.05 W/mK・関野ら2018）",
+        # k / k_measured は指定しない：かさ密度から loose_fill_k_rt() で自動算出
+        "density_dependent_k": True,
+        "standard": "密度依存相関式（ρ=97→λ0.037, ρ=275→λ0.050）",
         "properties_type": "kuntan",
         "notes": (
             "籾殻を燻焼炭化させた多孔質炭素材（ばら充填）。\n"
             "既に炭化済みのため熱分解・水分蒸発ピークなし（炭化コルクと同型のモデル）。\n"
-            "室温 λ=0.050 W/mK: 炭化籾殻ばら材の文献値（密度 275 kg/m³ 以下で "
-            "λ≤0.05 W/mK、MDPI Buildings 2024 ほか）。関野ら(2018, 岩手大)は"
-            "炭化による断熱性能維持と 450°C 炭化での λ 低下最大を報告。\n"
-            "高温域: 多孔質炭素の輻射伝熱による λ 上昇（炭化コルクモデルと同比率でスケール）。\n"
+            "【かさ密度】炭化籾殻(CRH)の文献値 ~150 kg/m³ を既定値とする。\n"
+            "  緩い 90 kg/m³ → λ≈0.037　標準 150 → λ≈0.041　圧縮 216 → λ≈0.046\n"
+            "【熱伝導率】かさ密度から相関式で算出し、λ(T) 曲線全体を同比率でスケール。\n"
+            "高温域: 多孔質炭素の輻射伝熱による λ 上昇（炭化コルクモデルと同比率）。\n"
+            "関野ら(2018, 岩手大)は炭化による断熱性能維持と 450°C 炭化での λ 低下最大を報告。\n"
             "シリカ骨格（灰分 30〜40%）により高温でも形状保持性が高い。\n"
             "【注意】ばら材のため沈下・対流は考慮されない。"
         ),
@@ -779,6 +785,60 @@ class CharredCorkProperties:
 
 
 # ---------------------------------------------------------------------------
+# ばら充填材（籾殻・くん炭）の密度依存熱伝導率
+# ---------------------------------------------------------------------------
+
+# 【背景】
+# 籾殻・籾殻くん炭のようなばら材は「詰め方」でかさ密度が大きく変わり、
+# 圧縮すると空隙が減って固体伝導経路が増えるため λ が上昇する。
+# 同一研究内で ばら 90 kg/m³ → 圧縮 216 kg/m³（2.4倍）の変動と、
+# それに伴う λ の有意な増加が報告されている。
+#
+# 【相関式】以下の 2 点を結ぶ線形近似：
+#   ρ =  97 kg/m³ → λ = 0.037 W/mK（最適プロトタイプ実測, MDPI Buildings 2024）
+#   ρ = 275 kg/m³ → λ = 0.050 W/mK（「275 kg/m³ 以下で λ≤0.05」の上限点）
+#
+# 【不確かさ】文献間のばらつきは大きい。同じ ~154 kg/m³ でも
+# Yarbrough et al.(2005) は 0.046〜0.057 W/mK と本相関式（≈0.041）より高い。
+# 測定法・含水率・品種・炭化温度の差に起因する。本相関式は中央推定であり、
+# ±30% 程度の不確かさを持つものとして扱うこと。
+_LOOSE_FILL_RHO_REF: float = 97.0      # 基準かさ密度 [kg/m³]
+_LOOSE_FILL_K_REF: float = 0.037       # 基準密度での λ [W/m·K]
+_LOOSE_FILL_SLOPE: float = 7.3e-5      # dλ/dρ [(W/m·K)/(kg/m³)]
+_LOOSE_FILL_RHO_MIN: float = 90.0      # 相関式の適用下限 [kg/m³]
+_LOOSE_FILL_RHO_MAX: float = 300.0     # 相関式の適用上限 [kg/m³]
+
+
+def loose_fill_k_rt(rho_0: float) -> float:
+    """ばら充填材（籾殻・くん炭）の室温熱伝導率を，かさ密度から算出する。
+
+    充填時の押し込み具合（かさ密度）で断熱性能が変わる効果を表現する。
+    密度が高いほど空隙が減り λ が上昇する（＝断熱性能が低下する）。
+
+    Parameters
+    ----------
+    rho_0 : float
+        かさ密度 [kg/m³]。適用範囲 90〜300 kg/m³（範囲外はクランプ）。
+
+    Returns
+    -------
+    float
+        室温（20°C）熱伝導率 λ [W/(m·K)]。
+
+    Examples
+    --------
+    >>> round(loose_fill_k_rt(97), 4)    # 緩いばら充填
+    0.037
+    >>> round(loose_fill_k_rt(150), 4)   # 標準的なくん炭
+    0.0409
+    >>> round(loose_fill_k_rt(216), 4)   # 圧縮充填
+    0.0457
+    """
+    rho = float(np.clip(rho_0, _LOOSE_FILL_RHO_MIN, _LOOSE_FILL_RHO_MAX))
+    return _LOOSE_FILL_K_REF + _LOOSE_FILL_SLOPE * (rho - _LOOSE_FILL_RHO_REF)
+
+
+# ---------------------------------------------------------------------------
 # 籾殻くん炭（燻炭）温度依存物性値クラス
 # ---------------------------------------------------------------------------
 
@@ -832,23 +892,33 @@ class KuntanProperties:
     高温域では細孔内輻射による見かけ熱伝導率の上昇を反映する。
 
     【物性値の根拠】
-    - 室温 λ=0.050 W/mK: 炭化籾殻ばら材の文献値
-      （MDPI Buildings 2024; 関野ら 2018 岩手大学農学部）
+    - 室温 λ: かさ密度から `loose_fill_k_rt()` の相関式で算出（密度依存）。
+      詰め方（押し込み具合）で断熱性能が変わる効果を反映する。
     - 温度依存性: 多孔質炭素系材料の文献的挙動
-      （炭化コルクテーブルとの相似則でスケール）
+      （炭化コルクテーブルとの相似則でスケール）。室温 λ の比率で全域をスケール。
     - シリカ灰分 30〜40% により高温でも形状保持性が高い
 
     Parameters
     ----------
     rho_0 : float
-        初期かさ密度 [kg/m³]。デフォルト 110 kg/m³（ばら充填 ~0.1 g/cm³）。
+        かさ密度 [kg/m³]。デフォルト 150 kg/m³
+        （炭化籾殻 CRH の文献値 ~0.150 g/cm³）。
+        緩い充填 ~90、標準 ~150、圧縮 ~216 kg/m³ が目安。
     smooth_half_width : float
         テーブル段差のスムージング幅の半分 [°C]。
     """
 
-    def __init__(self, rho_0: float = 110.0, smooth_half_width: float = 5.0) -> None:
+    #: `_KUNTAN_K_TABLE` が想定する基準室温 λ [W/m·K]（20°C の表値）
+    _K_TABLE_RT_REF: float = 0.050
+
+    def __init__(self, rho_0: float = 150.0, smooth_half_width: float = 5.0) -> None:
         self.rho_0 = float(rho_0)
-        self._k_table = smooth_table_jumps(_KUNTAN_K_TABLE, smooth_half_width)
+        # かさ密度に応じて λ(T) 曲線全体をスケール
+        # （室温値を相関式に合わせ、高温側の温度依存比率は維持する）
+        self.k_rt = loose_fill_k_rt(self.rho_0)
+        k_scale = self.k_rt / self._K_TABLE_RT_REF
+        _k_scaled = [(T, k * k_scale) for T, k in _KUNTAN_K_TABLE]
+        self._k_table = smooth_table_jumps(_k_scaled, smooth_half_width)
         self._cp_table = smooth_table_jumps(_KUNTAN_CP_TABLE, smooth_half_width)
         self._rho_ratio_table = smooth_table_jumps(
             _KUNTAN_RHO_RATIO_TABLE, smooth_half_width
@@ -1324,7 +1394,13 @@ def make_properties(
     # k_scale: 実測熱伝導率が DB に記録されている場合は補正スケールを計算
     # Eurocode 5 の基準値（20°C）= 0.12 W/m·K
     _K_EUROCODE_RT = 0.12  # Eurocode 5 室温熱伝導率 [W/m·K]
-    k_measured = defaults.get("k_measured")
+    _rho_eff = rho_0 if rho_0 is not None else defaults["rho_0"]
+    if defaults.get("density_dependent_k"):
+        # ばら充填材（籾殻など）: かさ密度から室温 λ を算出
+        # → 押し込み具合（詰め方）が断熱性能に反映される
+        k_measured = loose_fill_k_rt(_rho_eff)
+    else:
+        k_measured = defaults.get("k_measured")
     k_scale = (k_measured / _K_EUROCODE_RT) if k_measured is not None else 1.0
 
     return WoodProperties(

@@ -119,6 +119,7 @@ def _make_layer(
     slit_pitch_mm: float = 30.0,
     k_char_factor: float = 1.0,
     hole_filler: str = "air",
+    hole_filler_density_kg_m3: float | None = None,
 ) -> dict[str, Any]:
     """新しいレイヤー辞書を生成する（UUID 付き）。"""
     return {
@@ -141,6 +142,7 @@ def _make_layer(
         "slit_pitch_mm": slit_pitch_mm,
         "k_char_factor": k_char_factor,
         "hole_filler": hole_filler,
+        "hole_filler_density_kg_m3": hole_filler_density_kg_m3,
     }
 
 
@@ -279,6 +281,7 @@ def _load_preset(preset_name: str) -> None:
             custom_name=layer.get("custom_name", ""),
             k_char_factor=layer.get("k_char_factor", 1.0),
             hole_filler=layer.get("hole_filler", "air"),
+            hole_filler_density_kg_m3=layer.get("hole_filler_density_kg_m3"),
         )
         for i, layer in enumerate(spec.get("layers", []))
     ]
@@ -531,10 +534,29 @@ def _render_layer_editor() -> None:
                 )
                 _f = st.session_state.get(f"hfill_{lid}", cur_fill)
                 if _f != "air":
-                    st.caption(
-                        "💡 充填時は池畑式（空気孔の実験式）は適用外となり、"
-                        "充填材の温度依存物性値による並列混合則で計算されます。"
+                    from clt_fire_sim.materials import MATERIAL_DB as _MDB2
+                    _fdef = float(_MDB2.get(_f, {}).get("rho_0", 150.0))
+                    st.number_input(
+                        "充填密度（かさ密度）[kg/m³]",
+                        min_value=90.0, max_value=300.0,
+                        value=float(layer.get("hole_filler_density_kg_m3") or _fdef),
+                        step=10.0,
+                        key=f"hfdens_{lid}",
+                        help=(
+                            "詰め方の目安： 緩い 90〜110／標準 130〜150／圧縮 200〜220 kg/m³。\n"
+                            "密度が高いほど空隙が減り、熱伝導率が上昇（断熱性能が低下）します。"
+                        ),
                     )
+                    try:
+                        from clt_fire_sim.materials import loose_fill_k_rt as _lfk
+                        _dv = float(st.session_state.get(f"hfdens_{lid}", _fdef))
+                        st.caption(
+                            f"→ 室温 λ ≈ **{_lfk(_dv):.4f} W/mK**（密度依存相関式）　"
+                            "池畑式（空気孔の実験式）は適用外となり、"
+                            "充填材との並列混合則で計算されます。"
+                        )
+                    except Exception:
+                        pass
 
             # ── 木材 ──────────────────────────────────────────────
             if mat_type == "wood":
@@ -917,6 +939,7 @@ def _load_yaml_from_upload(uploaded_file: Any) -> None:
             slit_pitch_mm=getattr(layer, "slit_pitch_mm", 30.0),
             k_char_factor=getattr(layer, "k_char_factor", 1.0),
             hole_filler=getattr(layer, "hole_filler", "air"),
+            hole_filler_density_kg_m3=getattr(layer, "hole_filler_density_kg_m3", None),
         )
         for i, layer in enumerate(config.specimen.layers)
     ]
@@ -996,6 +1019,13 @@ def build_config() -> CLTConfig:
         custom_name = st.session_state.get(f"custom_name_{lid}", layer.get("custom_name", ""))
         k_char_factor = float(st.session_state.get(f"kcf_{lid}", layer.get("k_char_factor", 1.0)))
         hole_filler = str(st.session_state.get(f"hfill_{lid}", layer.get("hole_filler", "air")))
+        if hole_filler != "air":
+            _hf_d = st.session_state.get(
+                f"hfdens_{lid}", layer.get("hole_filler_density_kg_m3")
+            )
+            hole_filler_density = float(_hf_d) if _hf_d else None
+        else:
+            hole_filler_density = None
 
         layers.append(LayerConfig(
             material=material,
@@ -1015,6 +1045,7 @@ def build_config() -> CLTConfig:
             slit_pitch_mm=slit_pitch_mm,
             k_char_factor=k_char_factor,
             hole_filler=hole_filler,
+            hole_filler_density_kg_m3=hole_filler_density,
         ))
 
     n_cells = int(st.session_state.get(
@@ -1129,6 +1160,8 @@ def _layer_to_dict(layer: "LayerConfig") -> dict:
     # 孔・スリット充填材（"air" 以外のみ保存）
     if getattr(layer, "hole_filler", "air") != "air":
         d["hole_filler"] = layer.hole_filler
+        if getattr(layer, "hole_filler_density_kg_m3", None):
+            d["hole_filler_density_kg_m3"] = round(layer.hole_filler_density_kg_m3, 1)
     return d
 
 

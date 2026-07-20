@@ -285,9 +285,13 @@ def _build_layer_properties(layer):
         return base_props
 
     # 孔・スリットの充填材（"air" 以外なら MATERIAL_DB から物性値を生成）
+    # 充填密度が指定されていれば、そこから室温 λ が自動算出される（ばら材の詰め方を反映）
     filler_key = getattr(layer, "hole_filler", "air")
     filler_props = (
-        make_properties(material=filler_key)
+        make_properties(
+            material=filler_key,
+            rho_0=getattr(layer, "hole_filler_density_kg_m3", None),
+        )
         if filler_key and filler_key != "air"
         else None
     )

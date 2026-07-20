@@ -304,19 +304,23 @@ def _run_simulation_thread(
 
             # 孔・スリットの充填材（最初に見つかった "air" 以外を全 void セルに適用）
             void_props = None
-            _filler_keys = [
-                getattr(la, "hole_filler", "air")
-                for la in spec.layers
+            _filler_layers = [
+                la for la in spec.layers
                 if getattr(la, "material_type", "wood")
                 in ("perforated_wood", "perforated_wood_advanced", "slitted_wood")
+                and getattr(la, "hole_filler", "air") not in (None, "", "air")
             ]
-            _fillers = [f for f in _filler_keys if f and f != "air"]
-            if _fillers and void_mask is not None:
+            if _filler_layers and void_mask is not None:
                 from clt_fire_sim.materials import make_properties as _make_props
-                void_props = _make_props(material=_fillers[0])
-                _log(f"孔・スリット充填材: {_fillers[0]}（void セルに適用）")
-                if len(set(_fillers)) > 1:
-                    _log(f"⚠️ 複数の充填材が指定されています。'{_fillers[0]}' を全 void セルに適用します。")
+                _fl = _filler_layers[0]
+                _fkey = _fl.hole_filler
+                _fdens = getattr(_fl, "hole_filler_density_kg_m3", None)
+                void_props = _make_props(material=_fkey, rho_0=_fdens)
+                _dens_txt = f"{_fdens:.0f} kg/m³" if _fdens else "材料既定値"
+                _log(f"孔・スリット充填材: {_fkey}（充填密度 {_dens_txt}／void セルに適用）")
+                _keys = {la.hole_filler for la in _filler_layers}
+                if len(_keys) > 1:
+                    _log(f"⚠️ 複数の充填材が指定されています。'{_fkey}' を全 void セルに適用します。")
 
             solver = FVM3DSolver(mesh, props, bc_left, bc_right, T_init=T_init,
                                  void_mask=void_mask, void_props=void_props)
