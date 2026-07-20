@@ -946,6 +946,87 @@ _AIR_K: float = 0.026        # W/m·K
 _AIR_RHO_CP: float = 1206.0  # J/m³·K
 
 
+# ---------------------------------------------------------------------------
+# 空隙（孔・スリット）の温度依存等価熱伝導率
+# ---------------------------------------------------------------------------
+
+# 池畑(2021)・柴田(2021)の実験は炉内 13°C ↔ 33°C で行われた。
+# 実験式から逆算した空隙の等価熱伝導率は、この平均温度における
+# 「伝導 + 輻射 + 対流」の合計値である。
+_VOID_CAL_T_C: float = 23.0
+
+
+def void_k_at_temperature(
+    k_void_cal: float,
+    T_C: np.ndarray,
+    T_cal_C: float = _VOID_CAL_T_C,
+) -> np.ndarray:
+    """空隙の等価熱伝導率を較正温度から任意温度へ外挿する。
+
+    【背景】
+    実験式（池畑 Ra1 / スリット Rs）から得られる空隙の等価熱伝導率は
+    実験温度（≈23°C）での値であり、伝導・輻射・対流をすべて含む。
+    火災時は空隙が数百°C に達し、輻射伝熱が T⁴ 則で急増するため、
+    較正値をそのまま使うと空隙を通る熱を大幅に過小評価する。
+
+    【モデル】
+    空隙の等価熱伝導率を「静止空気の伝導」と「輻射＋対流」に分解し、
+    後者を輻射の温度依存性（h_rad ∝ T³）でスケールする::
+
+        k_void(T) = k_air + (k_void_cal − k_air) × (T/T_cal)³
+
+    実測値を基準にするため、輻射の視野係数（細長い空隙では端面間の
+    直接授受が小さい）を陽に扱う必要がなく、二重計上も起きない。
+
+    【効果の目安】(T_cal=23°C)
+        T=300°C → 係数 8.9倍   T=500°C → 17.8倍   T=700°C → 30.9倍
+
+    Parameters
+    ----------
+    k_void_cal : float
+        較正温度における空隙の等価熱伝導率 [W/(m·K)]。
+    T_C : np.ndarray
+        温度 [°C]。
+    T_cal_C : float
+        較正温度 [°C]。デフォルト 23°C。
+
+    Returns
+    -------
+    np.ndarray
+        温度 T における空隙の等価熱伝導率 [W/(m·K)]。
+    """
+    T_K = np.asarray(T_C, dtype=float) + 273.15
+    T_cal_K = T_cal_C + 273.15
+    # 輻射＋対流成分（静止空気の伝導を差し引いた残り）
+    k_rc = max(float(k_void_cal) - _AIR_K, 0.0)
+    return _AIR_K + k_rc * (np.maximum(T_K, 1.0) / T_cal_K) ** 3
+
+
+def _series_through_thickness(
+    k_processed: np.ndarray,
+    k_solid: np.ndarray,
+    processed_mm: float,
+    total_mm: float,
+) -> np.ndarray:
+    """加工部と無加工部を厚み方向の直列合成で結合する。
+
+    加工部（深さ d）と残りの無垢部（厚さ t−d）は熱流方向に直列に並ぶため、
+    熱抵抗を加算して合成する::
+
+        R = d/k_processed + (t−d)/k_solid
+        k_eff = t / R
+
+    （従来は d/t を重みとする熱伝導率の加重平均を用いていたが、
+    これは並列経路の合成式であり、直列に並ぶ領域には適用できない。）
+    """
+    d_m = max(min(float(processed_mm), float(total_mm)), 0.0) * 1e-3
+    t_m = max(float(total_mm), 1e-6) * 1e-3
+    rest_m = max(t_m - d_m, 0.0)
+    R = (d_m / np.maximum(k_processed, 1e-10)
+         + rest_m / np.maximum(k_solid, 1e-10))
+    return t_m / np.maximum(R, 1e-12)
+
+
 class PerforatedWoodProperties:
     """等間隔孔・スリット板の等価均質物性値クラス。
 
@@ -1136,46 +1217,48 @@ class PerforatedWoodAdvanced:
         )
         # 面積正規化された開孔部熱抵抗 Ra = Ra1 × N [m²K/W]（(4-3)・(5-8)式）
         self.ra = self._ra1 * self.n_holes_ref
-        # 高温（炭化温度以上）・充填材使用時のフォールバック（並列混合則）
-        self._fallback = PerforatedWoodProperties(base_props, self.vf, filler_props)
+        # 較正温度における孔の等価熱伝導率 k = L/Ra（伝導+輻射+対流を含む実測値）
+        _L_m = self.h_mm * 1e-3
+        self.k_void_cal = (_L_m / self.ra) if self.ra > 1e-12 else _AIR_K
 
         # 孔深さと板厚の比
         self._h_ratio = min(self.h_mm / max(self.t_mm, 1e-3), 1.0)
 
+    def _void_k(self, T: np.ndarray) -> np.ndarray:
+        """孔の等価熱伝導率を返す（充填材 or 空気＋輻射の温度依存）。"""
+        if self.filler is not None:
+            # 充填時は孔内の対流・輻射が抑制される → 充填材の物性値そのもの
+            return self.filler.get_k_array(T)
+        return void_k_at_temperature(self.k_void_cal, T)
+
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """等価熱伝導率を返す。
 
-        空気孔: 炭化温度（300°C）以下では池畑式、それ以上では並列混合則に
-        切り替え（炭化後は孔の形状が変化し実験式の適用外になるため）。
-        充填孔（くん炭・籾殻など）: 全温度域で充填材との並列混合則
-        （池畑式は空気孔の実験回帰式のため適用外）。
+        【合成方法（物理的整合を優先）】
+        1. 孔深さ範囲：木材部と孔は熱流方向に**並列**に並ぶため、
+           コンダクタンス（熱伝導率）を面積按分して合成する::
+               k_proc = (1−φ)·k_wood(T) + φ·k_void(T)
+        2. 孔深さ範囲と無加工部（板厚の残り）は熱流方向に**直列**なので、
+           熱抵抗を加算して合成する（`_series_through_thickness`）。
+
+        孔の等価熱伝導率 k_void(T) は、空気孔なら池畑実験式から逆算した
+        較正値を輻射の T³ 則で温度外挿し、充填孔なら充填材の物性値を使う。
+
+        （従来は孔深さ範囲を熱抵抗の面積按分で合成し、板厚方向は熱伝導率の
+        加重平均で結合していた。前者は直列、後者は並列の合成式であり、
+        いずれも並列／直列の対応が逆であった。また 300°C 以上で静止空気の
+        並列混合則へ不連続に切り替えていたため、輻射が消えて 30% の段差が
+        生じていた。本実装では k_void(T) が連続に温度依存するため段差はない。）
         """
         T = np.asarray(T, dtype=float)
-
-        # 充填材あり → 全温度域で並列混合則（孔深さ比の加重は下で適用）
-        if self.filler is not None:
-            k_wood = self.base.get_k_array(T)
-            k_mixed = self._fallback.get_k_array(T)
-            h_ratio = self._h_ratio
-            return h_ratio * k_mixed + (1.0 - h_ratio) * k_wood
-
         k_wood = self.base.get_k_array(T)
-        L_m = self.h_mm * 1e-3  # 孔深さ [m]
+        k_void = self._void_k(T)
 
-        # 孔深さ部分の等価 k（並列経路の合成）
-        # k_eff_holed = 1 / (R_eff / L) = L / ((1-φ)·L/k_wood + φ·Ra)
-        # ここで Ra = Ra1 × N（面積正規化された開孔部熱抵抗）
-        denom = (1.0 - self.vf) * L_m / np.maximum(k_wood, 1e-10) + self.vf * self.ra
-        k_eff_holed = np.where(denom > 1e-10, L_m / denom, k_wood)
+        # 1. 孔深さ範囲：並列合成（コンダクタンス加算）
+        k_proc = (1.0 - self.vf) * k_wood + self.vf * k_void
 
-        # 孔なし部分（板厚のうち孔が届かない部分）との加重平均
-        h_ratio = self._h_ratio
-        k_eff = h_ratio * k_eff_holed + (1.0 - h_ratio) * k_wood
-
-        # 炭化温度（300°C）以上は並列混合則にフォールバック
-        k_fallback = self._fallback.get_k_array(T)
-        char_mask = T >= 300.0
-        return np.where(char_mask, k_fallback, k_eff)
+        # 2. 無加工部との直列合成（熱抵抗加算）
+        return _series_through_thickness(k_proc, k_wood, self.h_mm, self.t_mm)
 
     def _void_rho_cp(self, T: np.ndarray) -> np.ndarray | float:
         """孔部分の体積熱容量（充填材 or 空気）を返す。"""
@@ -1270,14 +1353,22 @@ class SlittedWoodProperties:
         self.vf = min(self.W / self.P, 0.95)
 
         # スリット部の熱抵抗 Rs [m²K/W]
-        # 対流限界深さを超えない有効深さ
+        # 対流限界深さを超えない有効深さ（D > d_conv では対流が始まり
+        # 深さを増しても熱抵抗が増えないため、抵抗の計算のみ頭打ちにする）
         D_eff = min(self.D, self.d_conv)
         # 静止空気層近似: Rs = D_eff / λ_air ただし実測値より係数 0.6 で補正
         # （実測 Rs は理論値の約 60% に相当することを実験データから確認）
         self._rs = D_eff * 1e-3 / _AIR_K * 0.6
 
-        # フォールバック（並列混合則、充填材があれば充填材と混合）
-        self._fallback = PerforatedWoodProperties(base_props, self.vf, filler_props)
+        # 較正温度におけるスリットの等価熱伝導率
+        # 【深さ解釈の統一】空隙が占める幾何学的な深さは D（対流クランプは
+        # 熱抵抗の頭打ちであって、空隙が浅くなるわけではない）。
+        # したがって等価熱伝導率は k = D / Rs(D_eff) とする。
+        # （従来は抵抗計算に D_eff、層内配分に D を用いており、同じ試験体に
+        # 対して空隙深さが 2 通りに解釈されていた。）
+        self.k_void_cal = (
+            (self.D * 1e-3) / self._rs if self._rs > 1e-12 else _AIR_K
+        )
 
         # スリット深さの板厚に対する比
         self._d_ratio = min(self.D / max(self.t, 1e-3), 1.0)
@@ -1287,37 +1378,32 @@ class SlittedWoodProperties:
         """スリット部の等価熱抵抗 Rs [m²K/W]（1 枚のラミナあたり）。"""
         return self._rs
 
+    def _void_k(self, T: np.ndarray) -> np.ndarray:
+        """スリットの等価熱伝導率を返す（充填材 or 空気＋輻射の温度依存）。"""
+        if self.filler is not None:
+            # 充填時はスリット内の対流・輻射が抑制される
+            return self.filler.get_k_array(T)
+        return void_k_at_temperature(self.k_void_cal, T)
+
     def get_k_array(self, T: np.ndarray) -> np.ndarray:
         """等価熱伝導率を返す。
 
-        空気スリット: スリット深さ範囲の等価 k を計算し、それ以外の板厚部分と
-        加重平均する。炭化温度（300°C）以上では並列混合則にフォールバック。
-        充填スリット（くん炭・籾殻など）: 全温度域で充填材との並列混合則
-        （対流限界・0.6 補正は空気スリットの実験知見のため適用外）。
+        合成方法は `PerforatedWoodAdvanced.get_k_array` と統一されている::
+            1. スリット深さ範囲：木材部とスリットは**並列** → k を面積按分
+            2. スリット深さ範囲と無加工部：厚み方向に**直列** → R を加算
+
+        スリットの等価熱伝導率 k_void(T) は、空気なら実験式（対流限界つき）
+        から逆算した較正値を輻射の T³ 則で温度外挿し、充填時は充填材の値を使う。
         """
         T = np.asarray(T, dtype=float)
         k_wood = self.base.get_k_array(T)
+        k_void = self._void_k(T)
 
-        # 充填材あり → スリット深さ範囲を充填材と並列混合、対流限界なし
-        if self.filler is not None:
-            k_mixed = self._fallback.get_k_array(T)
-            d_ratio = self._d_ratio
-            return d_ratio * k_mixed + (1.0 - d_ratio) * k_wood
+        # 1. スリット深さ範囲：並列合成（コンダクタンス加算）
+        k_proc = (1.0 - self.vf) * k_wood + self.vf * k_void
 
-        D_eff_m = min(self.D, self.d_conv) * 1e-3  # [m]
-
-        # スリット深さ部分の等価 k
-        # R_eff_slit = (1-φ)·D_eff/k_wood + φ·Rs
-        denom = (1.0 - self.vf) * D_eff_m / np.maximum(k_wood, 1e-10) + self.vf * self._rs
-        k_eff_slit = np.where(denom > 1e-10, D_eff_m / denom, k_wood)
-
-        # 板厚全体での加重平均
-        d_ratio = self._d_ratio
-        k_eff = d_ratio * k_eff_slit + (1.0 - d_ratio) * k_wood
-
-        # 炭化後フォールバック
-        k_fallback = self._fallback.get_k_array(T)
-        return np.where(T >= 300.0, k_fallback, k_eff)
+        # 2. 無加工部との直列合成（熱抵抗加算）
+        return _series_through_thickness(k_proc, k_wood, self.D, self.t)
 
     def _void_rho_cp(self, T: np.ndarray) -> np.ndarray | float:
         """スリット部分の体積熱容量（充填材 or 空気）を返す。"""

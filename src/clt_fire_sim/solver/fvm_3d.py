@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 AIR_K: float = 0.026        # 熱伝導率 [W/m·K]（静止空気 20°C）
 AIR_RHO_CP: float = 1206.0  # 体積熱容量 [J/m³·K]（ρ=1.2 kg/m³ × cp=1005 J/kg·K）
 
+# ステファン-ボルツマン定数 [W/(m²·K⁴)]（空隙を横切る輻射の計算に使用）
+_SIGMA_SB: float = 5.670374419e-8
+
 
 # ---------------------------------------------------------------------------
 # 3D メッシュ
@@ -212,6 +215,7 @@ class FVM3DSolver:
         void_mask: np.ndarray | None = None,
         burn_through: bool = False,
         void_props: Any = None,
+        void_emissivity: float = 0.9,
     ) -> None:
         """
         Parameters
@@ -234,6 +238,9 @@ class FVM3DSolver:
             指定時は空洞セルに空気の代わりに充填材の温度依存物性値を適用する。
             充填孔は火炎ガスが侵入できないため burn_through とは併用不可
             （両方指定時は void_props を優先）。
+        void_emissivity : float
+            空洞内壁の放射率。通常モードで空隙を横切る輻射
+            k_rad = 4·ε·σ·T³·d を計算するのに用いる（木材・炭化面は 0.9 程度）。
         """
         self.mesh = mesh
         self.props = props
@@ -243,6 +250,7 @@ class FVM3DSolver:
         self.T = np.full(mesh.n_cells, float(T_init))
         self.t = 0.0
         self.void_props = void_props
+        self.void_emissivity = float(void_emissivity)
         # 充填材があれば燃え抜けは物理的に起こらない
         self.burn_through = bool(burn_through) and void_props is None
         # void_mask を 1D フラットインデックスで保持
@@ -250,6 +258,11 @@ class FVM3DSolver:
             self._void_flat = void_mask.ravel().astype(bool)
         else:
             self._void_flat = None
+        # 空隙を横切る輻射の代表寸法 [m]（YZ 断面の平均セル寸法）
+        # 空隙は YZ 平面内で複数セルにまたがるため、1 セル分の寸法を用いる
+        self._void_gap_m = float(
+            0.5 * (np.mean(mesh.dy) + np.mean(mesh.dz))
+        ) if void_mask is not None else 0.0
 
     def _build_matrix(
         self,
@@ -311,8 +324,13 @@ class FVM3DSolver:
                 k_arr[self._void_flat] = 0.625
                 rho_cp[self._void_flat] = AIR_RHO_CP
             else:
-                # 通常モード: 孔 = 静止空気（保守側でない）
-                k_arr[self._void_flat] = AIR_K
+                # 通常モード: 孔 = 静止空気の伝導 + 空隙を横切る輻射
+                # k_rad = 4·ε·σ·T³·d （d = 空隙セルの代表寸法）
+                # 静止空気のみでは高温域で孔を通る熱を 1〜2 桁過小評価する
+                T_void = T_iter[self._void_flat]
+                k_rad = (4.0 * self.void_emissivity * _SIGMA_SB
+                         * (T_void + 273.15) ** 3 * self._void_gap_m)
+                k_arr[self._void_flat] = AIR_K + k_rad
                 rho_cp[self._void_flat] = AIR_RHO_CP
 
         k_3d = k_arr.reshape(nx, ny, nz)

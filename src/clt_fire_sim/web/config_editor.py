@@ -686,9 +686,14 @@ def _render_layer_editor() -> None:
                         _depth_note = (
                             f"φ_V = φ_A × H/t = {vf_adv*100:.1f}% × {h_v:.0f}/{t_v:.0f}"
                         )
-                    from clt_fire_sim.materials import _IKEHATA_REF_AREA_MM2
+                    from clt_fire_sim.materials import (
+                        _IKEHATA_REF_AREA_MM2, void_k_at_temperature,
+                    )
                     _n_ref = (_IKEHATA_REF_AREA_MM2 * vf_adv
                               / max(_math.pi * (phi_v / 2) ** 2, 1e-9))
+                    _ra = ra1 * _n_ref
+                    _kv20 = (h_v * 1e-3 / _ra) if _ra > 1e-12 else 0.026
+                    _kv500 = float(void_k_at_temperature(_kv20, 500.0))
                     st.caption(
                         f"↳ {_depth_note}　"
                         f"等価密度 ≈ {rho_v * (1 - vf3d):.0f} kg/m³"
@@ -696,7 +701,11 @@ def _render_layer_editor() -> None:
                     st.caption(
                         f"📐 池畑式: Ra1 = {ra1*1e4:.2f}×10⁻⁴ m²K/W（孔1個）"
                         f"　×　N = {_n_ref:.0f} 個（300×300mm 換算）"
-                        f"　→　**Ra = {ra1*_n_ref:.4f} m²K/W**（開孔部）"
+                        f"　→　**Ra = {_ra:.4f} m²K/W**"
+                    )
+                    st.caption(
+                        f"🔥 孔の等価λ: 室温 **{_kv20:.4f}** → 500°C **{_kv500:.4f}** W/mK"
+                        f"（輻射の T³ 則で外挿）"
                     )
                 except Exception:
                     pass
@@ -746,8 +755,18 @@ def _render_layer_editor() -> None:
                     )
                     st.caption(
                         f"↳ φ_V = φ_A × D/t = {vf_slit*100:.1f}% × {sd_v:.0f}/{st_v:.0f}　"
-                        f"等価密度 ≈ {srho_v * (1 - vf3d_slit):.0f} kg/m³　"
-                        f"スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W"
+                        f"等価密度 ≈ {srho_v * (1 - vf3d_slit):.0f} kg/m³"
+                    )
+                    from clt_fire_sim.materials import void_k_at_temperature as _vkt
+                    _skv20 = (sd_v * 1e-3 / rs_approx) if rs_approx > 1e-12 else 0.026
+                    _skv500 = float(_vkt(_skv20, 500.0))
+                    _clamp = "（対流クランプ D_eff=9mm 適用）" if sd_v > 9.0 else ""
+                    st.caption(
+                        f"📐 スリット熱抵抗 Rs ≈ {rs_approx:.4f} m²K/W{_clamp}"
+                    )
+                    st.caption(
+                        f"🔥 スリットの等価λ: 室温 **{_skv20:.4f}** → 500°C **{_skv500:.4f}** W/mK"
+                        f"（輻射の T³ 則で外挿）"
                     )
                 except Exception:
                     pass
