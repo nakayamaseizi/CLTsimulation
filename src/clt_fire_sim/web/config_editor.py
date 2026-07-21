@@ -581,15 +581,21 @@ def _render_layer_editor() -> None:
                         step=10.0,
                         key=f"hfdens_{lid}",
                         help=(
-                            "詰め方の目安： 緩い 90〜110／標準 130〜150／圧縮 200〜220 kg/m³。\n"
+                            f"既定値は実測かさ密度 {_fdef:g} kg/m³。\n"
                             "密度が高いほど空隙が減り、熱伝導率が上昇（断熱性能が低下）します。"
                         ),
                     )
                     try:
-                        from clt_fire_sim.materials import loose_fill_k_rt as _lfk
+                        from clt_fire_sim.materials import (
+                            loose_fill_k_rt as _lfk, _LOOSE_FILL_MEASURED as _LFM,
+                        )
                         _dv = float(st.session_state.get(f"hfdens_{lid}", _fdef))
+                        _src = (
+                            f"実測アンカー ρ={_LFM[_f][0]:g}→λ={_LFM[_f][1]:.5f}"
+                            if _f in _LFM else "文献ベース相関式"
+                        )
                         st.caption(
-                            f"→ 室温 λ ≈ **{_lfk(_dv):.4f} W/mK**（密度依存相関式）　"
+                            f"→ 室温 λ ≈ **{_lfk(_dv, _f):.4f} W/mK**（{_src}）　"
                             "池畑式（空気孔の実験式）は適用外となり、"
                             "充填材との並列混合則で計算されます。"
                         )
