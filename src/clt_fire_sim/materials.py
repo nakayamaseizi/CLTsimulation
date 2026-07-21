@@ -1086,7 +1086,8 @@ class LooseFillPorousProperties:
     d_pore_mm : float
         代表細孔径 [mm]。輻射成分の実効光路長。
     emissivity : float
-        細孔内壁の放射率。燻炭（黒色炭素）は 0.95、籾殻（淡色）は 0.85 程度。
+        細孔内壁の放射率。籾殻・燻炭とも 0.9（籾殻は加熱により炭化・黒色化
+        するため、輻射が効く高温域では燻炭と同等とみなす）。
     T_cal_C : float
         実測の平均温度 [°C]。
     """
@@ -1152,14 +1153,22 @@ class LooseFillPorousProperties:
 #   d_pore : 代表細孔径 [mm]（輻射の実効光路長）
 #   eps    : 細孔内壁の放射率
 #
-# 放射率は材料の色調から設定した。燻炭は黒色炭素で放射率が高く、
-# 籾殻は淡色の有機物のためやや低い。細孔径は籾殻のセル構造
-# （100μm〜1mm 程度）の中央値。**いずれも実測ではなく推定値**であり、
-# 高温 λ の最大の不確かさ要因（`LooseFillPorousProperties` 参照）。
+# 放射率は両材料とも 0.9 とする。燻炭は黒色炭素で当初から放射率が高く、
+# 籾殻も加熱により炭化して黒色化するため、輻射が効き始める高温域では
+# 両者の表面性状は同等とみなせる。
+# （籾殻に低い放射率 0.85 を与えると、輻射差が T³ で拡大した結果
+#  700°C 付近で λ の大小が逆転する。これは実測に基づかない仮定が
+#  生む見かけの現象であり、物理的な裏付けがないため採用しない。）
+#
+# 細孔径は籾殻のセル構造（100μm〜1mm 程度）の中央値。
+# **いずれも実測ではなく推定値**であり、高温 λ の最大の不確かさ要因
+# （`LooseFillPorousProperties` 参照）。
+_LOOSE_FILL_EMISSIVITY: float = 0.9
+
 _LOOSE_FILL_PORE_PARAMS: dict[str, dict] = {
-    "kuntan":   {"d_pore_mm": 0.5, "emissivity": 0.95,
+    "kuntan":   {"d_pore_mm": 0.5, "emissivity": _LOOSE_FILL_EMISSIVITY,
                  "cp": _KUNTAN_CP_TABLE, "rho_ratio": _KUNTAN_RHO_RATIO_TABLE},
-    "momigara": {"d_pore_mm": 0.5, "emissivity": 0.85,
+    "momigara": {"d_pore_mm": 0.5, "emissivity": _LOOSE_FILL_EMISSIVITY,
                  "cp": _MOMIGARA_CP_TABLE, "rho_ratio": _MOMIGARA_RHO_RATIO_TABLE},
 }
 
