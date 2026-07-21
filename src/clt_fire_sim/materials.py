@@ -28,6 +28,20 @@ ThermalTable = list[tuple[float, float]]
 
 
 # ---------------------------------------------------------------------------
+# 物理定数・較正温度
+# ---------------------------------------------------------------------------
+
+#: ステファン-ボルツマン定数 [W/(m²·K⁴)]
+_SIGMA_SB: float = 5.670374419e-8
+
+#: 空隙・ばら材の熱伝導率の較正温度 [°C]
+#: 池畑(2021)・柴田(2021) の実験（炉内 13°C ↔ 33°C）および
+#: 鷹野研 HFM 実測（13→33°C, 平均 23.02°C）の平均温度。
+#: これらの実測値は伝導・輻射・対流をすべて含む合計値である。
+_VOID_CAL_T_C: float = 23.0
+
+
+# ---------------------------------------------------------------------------
 # Eurocode 5 Annex B 物性値テーブル（定数）
 # ---------------------------------------------------------------------------
 
@@ -576,7 +590,7 @@ MATERIAL_DB: dict[str, dict] = {
         # k_measured は指定しない：かさ密度から loose_fill_k_rt() で自動算出
         "density_dependent_k": True,
         "standard": "鷹野研究室 実測値（2026-07-21 HFM法）λ=0.0645 W/mK @ρ125",
-        "properties_type": "wood",
+        "properties_type": "loose_fill",
         "notes": (
             "籾殻ばら充填層。\n"
             "【熱伝導率】実測 λ=0.06450 W/mK（ρ=125 kg/m³、平均温度23.0°C）。\n"
@@ -601,7 +615,7 @@ MATERIAL_DB: dict[str, dict] = {
         # k / k_measured は指定しない：かさ密度から loose_fill_k_rt() で自動算出
         "density_dependent_k": True,
         "standard": "鷹野研究室 実測値（2026-07-21 HFM法）λ=0.0540 W/mK @ρ114",
-        "properties_type": "kuntan",
+        "properties_type": "loose_fill",
         "notes": (
             "籾殻を燻焼炭化させた多孔質炭素材（ばら充填）。\n"
             "既に炭化済みのため熱分解・水分蒸発ピークなし（炭化コルクと同型のモデル）。\n"
@@ -920,21 +934,57 @@ _KUNTAN_RHO_RATIO_TABLE: ThermalTable = [
 ]
 
 
+# ---- 籾殻（未炭化）の比熱・密度比テーブル ----
+# 籾殻は未炭化のため、燻炭と違って加熱中に水分蒸発と熱分解を経る。
+# 比熱: 室温は Marques et al.(2020) の実測 1599 J/kgK @40°C に整合させ、
+# 99〜120°C に含水率 10% 相当の蒸発潜熱ピークを設ける
+# （0.10 kg_水 × 2260 kJ/kg ÷ 21°C ≈ 10800 J/kgK を上乗せ）。
+# 熱分解後は炭素質となるため燻炭の比熱に漸近させる。
+_MOMIGARA_CP_TABLE: ThermalTable = [
+    (20,    1550.0),
+    (99,    1600.0),
+    (99,   12400.0),   # 水分蒸発ピーク開始（段差）
+    (120,  12300.0),   # 蒸発ピーク終端
+    (120,   1800.0),   # 乾燥後（段差）
+    (200,   1900.0),
+    (300,   1500.0),   # 熱分解の吸熱を経て炭素質へ
+    (400,   1250.0),
+    (600,   1350.0),
+    (800,   1450.0),
+]
+
+# 籾殻の密度比 ρ(T)/ρ₀ 推定テーブル
+# 99°C で含水率 10% 分の水分が蒸発し、200〜400°C の熱分解で有機分が揮発。
+# シリカ灰分 15〜20% が残るため、完全には失われない。
+_MOMIGARA_RHO_RATIO_TABLE: ThermalTable = [
+    (20,   1.10),      # 含水率 10% を含む
+    (99,   1.10),
+    (99,   1.00),      # 水分蒸発（段差）
+    (200,  0.98),
+    (300,  0.80),      # 熱分解開始
+    (400,  0.55),
+    (500,  0.45),
+    (600,  0.40),
+    (800,  0.36),      # 炭素＋シリカ灰分が残存
+]
+
+
 class KuntanProperties:
-    """籾殻くん炭（燻炭・炭化籾殻）の温度依存熱物性クラス。
+    """【旧モデル・保守用】籾殻くん炭の一括スケール型 λ(T) モデル。
 
-    炭化コルク（CharredCorkProperties）と同型の「既炭化多孔質材」モデル。
-    既に炭化済みのため水分蒸発・熱分解ピークを持たず、
-    高温域では細孔内輻射による見かけ熱伝導率の上昇を反映する。
+    .. deprecated::
+        `LooseFillPorousProperties`（成分分離モデル）に置き換えられた。
+        UI からは選択できない。過去結果の再現・比較用に残している。
 
-    【物性値の根拠】
-    - 室温 λ: 実測値 0.05404 W/mK（ρ=114.35 kg/m³、平均温度 23.0°C、
-      熱流計法 HFM、鷹野研究室 2026-07-21）を基準とし、密度が異なる場合は
-      文献ベースの傾き dλ/dρ で外挿する（`loose_fill_k_rt`）。
-    - 温度依存性: 多孔質炭素系材料の文献的挙動
-      （炭化コルクテーブルとの相似則でスケール）。室温 λ の比率で全域をスケール。
-      **高温側は実測がなく推定である。**
-    - シリカ灰分 30〜40% により高温でも形状保持性が高い
+    炭化コルクの λ(T) テーブルを室温実測値の比率で一律スケールする方式。
+    以下の問題があるため既定では使用しない:
+
+    1. 空気の伝導率を定数（0.026）扱いし、温度上昇（500°C で約2倍）を無視。
+       籾殻・燻炭の細孔（~0.5mm）では 600°C 付近まで気体伝導が輻射より
+       大きいため、この温度域で系統的に誤差が出る。
+    2. 輻射・気体・固体を分離せず一括で T³ スケールするため、
+       物理的な内訳が追えず感度解析ができない。
+    3. 高温側の形状が炭化コルク由来で、燻炭の実測に基づかない。
 
     Parameters
     ----------
@@ -976,6 +1026,180 @@ class KuntanProperties:
 
 
 # ---------------------------------------------------------------------------
+# ばら充填多孔質材の成分分離モデル
+# ---------------------------------------------------------------------------
+
+# 乾燥空気の熱伝導率 λ_air(T) [W/(m·K)]（標準大気圧）
+# 気体の伝導率は温度とともに上昇する（500°C で室温の約2倍）。
+# 旧モデルはこれを定数 0.026 としていたため、細孔径が小さく輻射が
+# 効きにくい材料（籾殻・燻炭）で系統誤差が生じていた。
+_AIR_K_TABLE: ThermalTable = [
+    (20,   0.0257), (100,  0.0314), (200,  0.0386), (300,  0.0454),
+    (400,  0.0521), (500,  0.0574), (600,  0.0621), (700,  0.0668),
+    (800,  0.0715), (900,  0.0763), (1000, 0.0807), (1200, 0.0890),
+]
+
+
+def air_thermal_conductivity(T: np.ndarray | float) -> np.ndarray:
+    """乾燥空気の温度依存熱伝導率 [W/(m·K)] を返す。"""
+    return table_interp(_AIR_K_TABLE, np.asarray(T, dtype=float))
+
+
+class LooseFillPorousProperties:
+    """ばら充填多孔質材（籾殻・燻炭）の成分分離型 温度依存熱物性クラス。
+
+    見かけの熱伝導率を物理的な3成分に分解して扱う::
+
+        λ_eff(T) = λ_solid + λ_gas(T) + λ_rad(T)
+
+        λ_gas(T) = λ_air(T)                 気体伝導（実測物性・温度依存）
+        λ_rad(T) = 4·ε·σ·T³·d_pore          細孔内輻射（T³則）
+        λ_solid  = λ_meas − λ_gas(T_cal) − λ_rad(T_cal)    残差として決定
+
+    固体骨格成分を「室温実測値から他成分を差し引いた残差」として決めるため、
+    **較正温度において実測値を厳密に再現する**。そのうえで各成分が固有の
+    温度依存性を持つので、一括スケールより物理的整合性が高い。
+
+    【旧モデル（KuntanProperties）からの主な改善】
+    - 空気の伝導率が温度依存になる。籾殻・燻炭の細孔（~0.5mm）では
+      600°C 付近まで気体伝導が輻射より大きく、この寄与は無視できない。
+    - 籾殻に Eurocode 5 木材曲線を流用しなくなる。旧実装では炭化の谷により
+      400°C で室温より低い λ（0.041 < 0.065）となり、
+      「燃焼中に断熱性能が向上する」という非物理的な挙動を示していた。
+    - d_pore・ε が明示的パラメータとなり、感度解析が可能になる。
+
+    【不確かさ】
+    高温域の実測がないため d_pore が最大の不確かさ要因である。
+    d_pore=0.1〜2.0mm の範囲で 500°C の λ は約3倍変動する
+    （室温 λ は実測で固定されるため、ほぼ影響を受けない）。
+
+    Parameters
+    ----------
+    k_meas : float
+        較正温度における実測熱伝導率 [W/(m·K)]。
+    rho_0 : float
+        かさ密度 [kg/m³]。
+    cp_table : ThermalTable
+        比熱テーブル [J/(kg·K)]。
+    rho_ratio_table : ThermalTable
+        密度比テーブル ρ(T)/ρ₀。
+    d_pore_mm : float
+        代表細孔径 [mm]。輻射成分の実効光路長。
+    emissivity : float
+        細孔内壁の放射率。燻炭（黒色炭素）は 0.95、籾殻（淡色）は 0.85 程度。
+    T_cal_C : float
+        実測の平均温度 [°C]。
+    """
+
+    def __init__(
+        self,
+        k_meas: float,
+        rho_0: float,
+        cp_table: ThermalTable,
+        rho_ratio_table: ThermalTable,
+        d_pore_mm: float = 0.5,
+        emissivity: float = 0.9,
+        T_cal_C: float = _VOID_CAL_T_C,
+        smooth_half_width: float = 5.0,
+    ) -> None:
+        self.k_meas = float(k_meas)
+        self.rho_0 = float(rho_0)
+        self.d_pore_mm = float(d_pore_mm)
+        self.emissivity = float(emissivity)
+        self.T_cal_C = float(T_cal_C)
+
+        # 固体骨格成分を残差として決定（較正温度で実測値を厳密再現）
+        k_gas_cal = float(air_thermal_conductivity(self.T_cal_C))
+        k_rad_cal = self._k_rad(self.T_cal_C)
+        self.k_solid = max(self.k_meas - k_gas_cal - k_rad_cal, 0.0)
+
+        self._cp_table = smooth_table_jumps(cp_table, smooth_half_width)
+        self._rho_ratio_table = smooth_table_jumps(rho_ratio_table, smooth_half_width)
+
+    def _k_rad(self, T_C):
+        """細孔内輻射の等価熱伝導率 4εσT³d [W/(m·K)]。"""
+        T_K = np.asarray(T_C, dtype=float) + 273.15
+        return (4.0 * self.emissivity * _SIGMA_SB
+                * T_K ** 3 * self.d_pore_mm * 1e-3)
+
+    def get_k_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存熱伝導率 λ(T) = λ_solid + λ_gas(T) + λ_rad(T)。"""
+        T_arr = np.asarray(T, dtype=float)
+        return self.k_solid + air_thermal_conductivity(T_arr) + self._k_rad(T_arr)
+
+    def get_k_components(self, T: np.ndarray) -> dict:
+        """成分ごとの内訳を返す（診断・感度解析の可視化用）。"""
+        T_arr = np.asarray(T, dtype=float)
+        gas = air_thermal_conductivity(T_arr)
+        rad = self._k_rad(T_arr)
+        return {
+            "solid": np.full_like(T_arr, self.k_solid),
+            "gas": gas,
+            "radiation": rad,
+            "total": self.k_solid + gas + rad,
+        }
+
+    def get_rho_cp_array(self, T: np.ndarray) -> np.ndarray:
+        """温度依存体積熱容量 ρ(T)·cp(T) [J/(m³·K)] を返す。"""
+        T_arr = np.asarray(T, dtype=float)
+        rho_ratio = table_interp(self._rho_ratio_table, T_arr)
+        cp = table_interp(self._cp_table, T_arr)
+        rho = np.maximum(self.rho_0 * rho_ratio, 1.0)
+        return rho * cp
+
+
+# ばら充填材ごとの成分分離モデル用パラメータ
+#   d_pore : 代表細孔径 [mm]（輻射の実効光路長）
+#   eps    : 細孔内壁の放射率
+#
+# 放射率は材料の色調から設定した。燻炭は黒色炭素で放射率が高く、
+# 籾殻は淡色の有機物のためやや低い。細孔径は籾殻のセル構造
+# （100μm〜1mm 程度）の中央値。**いずれも実測ではなく推定値**であり、
+# 高温 λ の最大の不確かさ要因（`LooseFillPorousProperties` 参照）。
+_LOOSE_FILL_PORE_PARAMS: dict[str, dict] = {
+    "kuntan":   {"d_pore_mm": 0.5, "emissivity": 0.95,
+                 "cp": _KUNTAN_CP_TABLE, "rho_ratio": _KUNTAN_RHO_RATIO_TABLE},
+    "momigara": {"d_pore_mm": 0.5, "emissivity": 0.85,
+                 "cp": _MOMIGARA_CP_TABLE, "rho_ratio": _MOMIGARA_RHO_RATIO_TABLE},
+}
+
+
+def make_loose_fill_properties(
+    material: str,
+    rho_0: float | None = None,
+    d_pore_mm: float | None = None,
+    emissivity: float | None = None,
+) -> LooseFillPorousProperties:
+    """ばら充填材（籾殻・燻炭）の成分分離型物性値オブジェクトを生成する。
+
+    Parameters
+    ----------
+    material : str
+        材料キー（"momigara" / "kuntan"）。
+    rho_0 : float or None
+        かさ密度 [kg/m³]。None なら MATERIAL_DB の既定値（実測値）。
+    d_pore_mm, emissivity : float or None
+        感度解析用の上書き。None なら材料既定値。
+    """
+    if material not in _LOOSE_FILL_PORE_PARAMS:
+        raise ValueError(
+            f"'{material}' はばら充填材ではありません。"
+            f"使用可能: {', '.join(_LOOSE_FILL_PORE_PARAMS)}"
+        )
+    par = _LOOSE_FILL_PORE_PARAMS[material]
+    rho = float(rho_0) if rho_0 is not None else float(MATERIAL_DB[material]["rho_0"])
+    return LooseFillPorousProperties(
+        k_meas=loose_fill_k_rt(rho, material),
+        rho_0=rho,
+        cp_table=par["cp"],
+        rho_ratio_table=par["rho_ratio"],
+        d_pore_mm=par["d_pore_mm"] if d_pore_mm is None else float(d_pore_mm),
+        emissivity=(par["emissivity"] if emissivity is None
+                    else float(emissivity)),
+    )
+
+
+# ---------------------------------------------------------------------------
 # 有孔板の等価物性値クラス
 # ---------------------------------------------------------------------------
 
@@ -987,11 +1211,7 @@ _AIR_RHO_CP: float = 1206.0  # J/m³·K
 # ---------------------------------------------------------------------------
 # 空隙（孔・スリット）の温度依存等価熱伝導率
 # ---------------------------------------------------------------------------
-
-# 池畑(2021)・柴田(2021)の実験は炉内 13°C ↔ 33°C で行われた。
-# 実験式から逆算した空隙の等価熱伝導率は、この平均温度における
-# 「伝導 + 輻射 + 対流」の合計値である。
-_VOID_CAL_T_C: float = 23.0
+# 較正温度の定数はファイル前方（物性クラス定義より前）で宣言済み。
 
 
 # ---------------------------------------------------------------------------
@@ -1609,7 +1829,12 @@ def make_properties(
             rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
         )
 
-    # 籾殻くん炭（既炭化多孔質材モデル）
+    # ばら充填多孔質材（籾殻・燻炭）: 成分分離モデル
+    if props_type == "loose_fill":
+        return make_loose_fill_properties(material, rho_0)
+
+    # 【旧モデル】燻炭の一括スケール方式。UI からは選択できないが、
+    # 過去結果の再現用に properties_type="kuntan" を指定すれば利用できる。
     if props_type == "kuntan":
         return KuntanProperties(
             rho_0=rho_0 if rho_0 is not None else defaults["rho_0"],
